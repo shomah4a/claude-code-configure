@@ -1,0 +1,30 @@
+{
+  "model": "sonnet",
+  "permissions": {
+    "allow": [
+      "Bash(tts:*)"
+    ]
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cc-notification"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cc-stop"
+          }
+        ]
+      }
+    ]
+  }
+}
