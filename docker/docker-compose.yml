@@ -22,6 +22,7 @@ services:
       - ../tools/tts-client/tts.sh:/home/ubuntu/bin/tts:ro
       - ../commands/cc-notification:/home/ubuntu/bin/cc-notification:ro
       - ../commands/cc-stop:/home/ubuntu/bin/cc-stop:ro
+      - ../commands/cc-pre-tool:/home/ubuntu/bin/cc-pre-tool:ro
     working_dir: ${PWD}
     stdin_open: true
     tty: true
