@@ -20,6 +20,8 @@ services:
       - ~/.ivy2/cache:/home/ubuntu/.ivy2/cache
 
       - ../tools/tts-client/tts.sh:/home/ubuntu/bin/tts:ro
+      - ../commands/cc-notification:/home/ubuntu/bin/cc-notification:ro
+      - ../commands/cc-stop:/home/ubuntu/bin/cc-stop:ro
     working_dir: ${PWD}
     stdin_open: true
     tty: true
