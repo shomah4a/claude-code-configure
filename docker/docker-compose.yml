@@ -2,6 +2,8 @@ services:
   claude-code:
     build: .
     container_name: claude-code
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     user: ubuntu
     environment:
       - USER_ID=${UID:-1000}
@@ -17,6 +19,7 @@ services:
       - ~/.config/claude:/home/ubuntu/.config/claude
       - ~/.ivy2/cache:/home/ubuntu/.ivy2/cache
 
+      - ../tools/tts-client/tts.sh:/home/ubuntu/bin/tts:ro
     working_dir: ${PWD}
     stdin_open: true
     tty: true

@@ -36,6 +36,9 @@ USER ubuntu
 
 RUN mkdir /home/ubuntu/.ivy2
 RUN mkdir /home/ubuntu/.config
+RUN mkdir /home/ubuntu/bin
+
+RUN echo 'PATH=$PATH:$HOME/bin' > /home/ubuntu/.bashrc
 
 # デフォルトコマンド
 CMD ["claude"]
