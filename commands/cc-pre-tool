@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""
+Claude Code PreToolUse Hook
+各ツール実行前にttsコマンドで音声出力を行う
+"""
+
+import json
+import sys
+import subprocess
+import logging
+from typing import Dict, Any
+from pathlib import Path
+
+# ログ設定
+log_file = Path.home() / ".claude" / "pretool_hook.log"
+log_file.parent.mkdir(exist_ok=True)
+logging.basicConfig(
+    filename=log_file,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+# 各ツールに対応する音声メッセージのマッピング
+TOOL_MESSAGES = {
+    "Task": "サブエージェントタスクを実行します",
+    "Bash": "シェルコマンドを実行します",
+    "Read": "ファイルを読み込みます",
+    "Write": "ファイルを書き込みます",
+    "Edit": "ファイルを編集します",
+    "MultiEdit": "複数のファイル編集を実行します",
+    "Glob": "ファイルパターン検索を実行します",
+    "Grep": "ファイル内容検索を実行します",
+    "WebFetch": "Web情報を取得します",
+    "WebSearch": "Web検索を実行します",
+    "TodoWrite": "Todoリストを更新します",
+    "LS": "ディレクトリ一覧を表示します",
+    "ExitPlanMode": "計画モードを終了します",
+    "NotebookRead": "Jupyter notebookを読み込みます",
+    "NotebookEdit": "Jupyter notebookを編集します"
+}
+
+def get_detailed_message(tool_name: str, tool_input: Dict[str, Any]) -> str:
+    """ツール種別と入力パラメータに基づいて詳細なメッセージを生成"""
+    base_message = TOOL_MESSAGES.get(tool_name, f"{tool_name}ツールを実行します")
+
+    try:
+        # 特定のツールに対してより詳細なメッセージを生成
+        if tool_name == "Bash" and "command" in tool_input:
+            cmd = tool_input["command"][:50] + "..." if len(tool_input["command"]) > 50 else tool_input["command"]
+            if 'tts' in cmd:
+                    return None
+
+            return f"コマンド「{cmd}」を実行します"
+
+        elif tool_name in ["Read", "Write", "Edit"] and "file_path" in tool_input:
+            import os
+            filename = os.path.basename(tool_input["file_path"])
+            return f"ファイル「{filename}」を{base_message[4:]}"  # "ファイルを"の部分を除去
+
+        elif tool_name == "Grep" and "pattern" in tool_input:
+            pattern = tool_input["pattern"][:30] + "..." if len(tool_input["pattern"]) > 30 else tool_input["pattern"]
+            return f"パターン「{pattern}」で検索を実行します"
+
+        elif tool_name == "Task" and "description" in tool_input:
+            desc = tool_input["description"]
+            return f"タスク「{desc}」を実行します"
+
+        return base_message
+
+    except Exception as e:
+        logging.error(f"メッセージ生成エラー (tool: {tool_name}): {e}")
+        return base_message
+
+def run_tts(message: str):
+    """ttsコマンドを実行して音声出力"""
+    try:
+        result = subprocess.run(["tts", message], check=True, capture_output=True, text=True)
+        logging.info(f"TTS実行成功: {message}")
+    except FileNotFoundError:
+        logging.warning("ttsコマンドが見つかりません")
+        raise
+    except subprocess.CalledProcessError as e:
+        logging.error(f"ttsコマンド実行エラー: {e}, stdout: {e.stdout}, stderr: {e.stderr}")
+        raise
+    except Exception as e:
+        logging.error(f"TTS実行中の予期しないエラー: {e}")
+        raise
+
+def main():
+    try:
+        # 標準入力からJSONデータを読み取り
+        input_data = json.load(sys.stdin)
+
+        tool_name = input_data.get("tool_name", "")
+        tool_input = input_data.get("tool_input", {})
+
+        logging.info(f"PreToolUse hook実行: tool={tool_name}")
+
+        # 音声出力メッセージを生成
+        message = get_detailed_message(tool_name, tool_input)
+
+        if message:
+            # ttsコマンドで音声出力
+            run_tts(message)
+
+        # 音声出力のみで判断は保留（何も返さない）
+        return 0
+
+    except json.JSONDecodeError as e:
+        logging.error(f"JSON解析エラー: {e}")
+        return 1
+    except Exception as e:
+        logging.error(f"PreToolUse hook実行エラー: {e}")
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())

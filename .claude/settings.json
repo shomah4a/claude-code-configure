@@ -25,6 +25,16 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cc-pre-tool"
+          }
+        ]
+      }
     ]
   }
 }

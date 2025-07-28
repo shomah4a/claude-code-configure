@@ -12,6 +12,7 @@ RUN dnf update -y && \
     tar \
     xz \
     shadow-utils \
+    jq \
     && dnf clean all
 
 # Node.js 22のインストール
