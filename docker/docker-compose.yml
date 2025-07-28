@@ -1,0 +1,24 @@
+services:
+  claude-code:
+    build: .
+    container_name: claude-code
+    user: ubuntu
+    environment:
+      - USER_ID=${UID:-1000}
+      - GROUP_ID=${GID:-1000}
+
+    volumes:
+      # 現在のディレクトリをワークスペースとしてマウント
+      - ${PWD}:${PWD}
+      # 必要に応じて設定ファイルを個別に追加（例）
+      # - ~/.gitconfig:/tmp/.gitconfig:ro
+      - ~/.claude:/home/ubuntu/.claude
+      - ~/.gitconfig:/home/ubuntu/.gitconfig:ro
+      - ~/.config/claude:/home/ubuntu/.config/claude
+      - ~/.ivy2/cache:/home/ubuntu/.ivy2/cache
+
+    working_dir: ${PWD}
+    stdin_open: true
+    tty: true
+    # デフォルトでbashシェルを起動
+    command: ["bash"]
