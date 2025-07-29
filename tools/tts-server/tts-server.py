@@ -6,10 +6,12 @@ import ipaddress
 import threading
 from wsgiref.simple_server import make_server
 
+import traceback
+
 PORT = 37721
 
 # デフォルトの読み上げ速度（-10から10、0が標準）
-SPEED = 3  # 少し速めに設定
+SPEED = 5  # 少し速めに設定
 
 # グローバルロック
 tts_lock = threading.Lock()
@@ -36,6 +38,36 @@ class TTSEngine:
         self.process.stdin.write("Add-Type -AssemblyName System.Speech\n")
         self.process.stdin.write("$s = New-Object System.Speech.Synthesis.SpeechSynthesizer\n")
         self.process.stdin.flush()
+
+    def speak(self, text, rate=SPEED):
+        """テキストを読み上げ"""
+        with self.lock:
+            try:
+                encoded = base64.b64encode(text.encode('utf-8')).decode()
+                commands = [
+                    f"$s.Rate = {rate}",
+                    f"$bytes = [Convert]::FromBase64String('{encoded}')",
+                    "$text = [System.Text.Encoding]::UTF8.GetString($bytes)",
+                    "$s.Speak($text)",
+                    "Write-Output 'DONE'"
+                ]
+
+                for cmd in commands:
+                    self.process.stdin.write(cmd + "\n")
+                self.process.stdin.flush()
+
+                # 完了を待つ
+                while True:
+                    line = self.process.stdout.readline()
+                    if 'DONE' in line:
+                        break
+
+                return True
+            except:
+                # プロセスが死んでいたら再起動
+                self._cleanup()
+                self._start_process()
+                return False
 
     def speak(self, text, rate=SPEED):
         """テキストを読み上げ"""
@@ -108,7 +140,7 @@ def app(environ, start_response):
             rate = int(params.get('rate', SPEED))
             rate = max(-10, min(10, rate))
         except:
-            pass
+            traceback.print_exc()
 
     if tts_engine.speak(text, rate):
         start_response('200 OK', [])
