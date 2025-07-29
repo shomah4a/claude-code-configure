@@ -15,8 +15,8 @@ services:
       # 必要に応じて設定ファイルを個別に追加（例）
       # - ~/.gitconfig:/tmp/.gitconfig:ro
       - ~/.claude:/home/ubuntu/.claude
+      - ~/.claude:/home/ubuntu/.config/claude
       - ~/.gitconfig:/home/ubuntu/.gitconfig:ro
-      - ~/.config/claude:/home/ubuntu/.config/claude
       - ~/.ivy2/cache:/home/ubuntu/.ivy2/cache
 
       - ../tools/tts-client/tts.sh:/home/ubuntu/bin/tts:ro
