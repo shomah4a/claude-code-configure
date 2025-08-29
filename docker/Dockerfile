@@ -13,6 +13,7 @@ RUN dnf update -y && \
     xz \
     shadow-utils \
     jq \
+    procps-ng \
     && dnf clean all
 
 # Node.js 22のインストール
@@ -24,7 +25,7 @@ RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-li
 WORKDIR /app
 
 # Claude Codeをグローバルインストール
-RUN npm install -g @anthropic-ai/claude-code@1.0.51
+RUN npm install -g @anthropic-ai/claude-code
 
 # ubuntuユーザーの作成
 RUN useradd -m -s /bin/bash ubuntu
