@@ -32,6 +32,8 @@ RUN npm install -g @anthropic-ai/claude-code
 # ubuntuユーザーの作成
 RUN useradd -m -s /bin/bash ubuntu
 
+RUN pip install pdfplumber
+
 # ヘルスチェック
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD claude --version && java -version
