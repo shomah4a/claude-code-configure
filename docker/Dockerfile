@@ -14,6 +14,7 @@ RUN dnf update -y && \
     shadow-utils \
     jq \
     procps-ng \
+    poppler-utils \
     && dnf clean all
 
 # Node.js 22のインストール
