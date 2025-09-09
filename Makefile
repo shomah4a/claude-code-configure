@@ -11,6 +11,3 @@ $(HOME)/.claude/settings.json: .claude/settings.json
 $(HOME)/.claude/agents/%.md: .claude/agents/%.md
 	mkdir -p $(HOME)/.claude/agents
 	cp -f $< $@
-
-hoge:
-	echo $(addprefix $(HOME)/,$(wildcard .claude/agents/*.md))
