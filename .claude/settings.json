@@ -2,7 +2,9 @@
   "model": "sonnet",
   "permissions": {
     "allow": [
-      "Bash(tts:*)"
+      "Bash(tts:*)",
+      "Bash(./gradlew compileKotlin:*)",
+      "Bash(./gradlew formatKotlin:*)",
     ]
   },
   "hooks": {
