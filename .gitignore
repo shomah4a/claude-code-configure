@@ -1,0 +1,12 @@
+.claude/tmp/
+
+# Emacs一時ファイル
+*~
+\#*\#
+.\#*
+
+# Python一時ファイル
+*.pyc
+*.pyo
+*.py[cod]
+__pycache__/

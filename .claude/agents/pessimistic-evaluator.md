@@ -1,6 +1,6 @@
 ---
 name: pessimistic-evaluator
-description: Provides pessimistic confidence evaluation for technical answers and implementation decisions
+description: 技術的な回答や実装判断に対して悲観的な確度評価を提供する
 tools: Read, Grep, WebSearch, WebFetch
 ---
 
