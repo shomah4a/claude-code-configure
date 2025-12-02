@@ -79,6 +79,10 @@ TOOLS = [
                     "description": "取得する最大件数",
                     "minimum": 1,
                     "maximum": 100
+                },
+                "search": {
+                    "type": "string",
+                    "description": "検索クエリ（例: created:>2024-01-01, updated:<2024-06-01）"
                 }
             },
             "required": ["owner", "repository_name"]
@@ -135,6 +139,10 @@ TOOLS = [
                     "description": "取得する最大件数",
                     "minimum": 1,
                     "maximum": 100
+                },
+                "search": {
+                    "type": "string",
+                    "description": "検索クエリ（例: created:>2024-01-01, updated:<2024-06-01）"
                 }
             },
             "required": ["owner", "repository_name"]
@@ -317,6 +325,9 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, An
         if "limit" in arguments:
             args.extend(["--limit", str(arguments["limit"])])
 
+        if "search" in arguments:
+            args.extend(["--search", arguments["search"]])
+
         stdout, stderr, code = execute_gh_command(args)
 
         if code != 0:
@@ -343,6 +354,9 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, An
 
         if "limit" in arguments:
             args.extend(["--limit", str(arguments["limit"])])
+
+        if "search" in arguments:
+            args.extend(["--search", arguments["search"]])
 
         stdout, stderr, code = execute_gh_command(args)
 
