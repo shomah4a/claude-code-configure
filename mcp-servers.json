@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gh-proxy": {
+      "type": "http",
+      "url": "http://host.docker.internal:30721/"
+    }
+  }
+}

@@ -184,14 +184,56 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 }
 ```
 
+### 6. gh_pr_comments
+
+指定されたPull Requestのコメント一覧を取得します。
+
+**引数:**
+- `owner` (必須): リポジトリのオーナー名
+- `repository_name` (必須): リポジトリ名
+- `number` (必須): PR番号
+
+**例:**
+```json
+{
+  "name": "gh_pr_comments",
+  "arguments": {
+    "owner": "anthropics",
+    "repository_name": "anthropic-sdk-python",
+    "number": 123
+  }
+}
+```
+
+### 7. gh_issue_comments
+
+指定されたIssueのコメント一覧を取得します。
+
+**引数:**
+- `owner` (必須): リポジトリのオーナー名
+- `repository_name` (必須): リポジトリ名
+- `number` (必須): Issue番号
+
+**例:**
+```json
+{
+  "name": "gh_issue_comments",
+  "arguments": {
+    "owner": "anthropics",
+    "repository_name": "anthropic-sdk-python",
+    "number": 456
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. readonly操作のみ提供
 
 このサーバーは以下のreadonly操作のみを提供します：
 - リポジトリ情報の取得
-- Pull Requestの取得（一覧/詳細）
-- Issueの取得（一覧/詳細）
+- Pull Requestの取得（一覧/詳細/コメント）
+- Issueの取得（一覧/詳細/コメント）
 
 書き込み操作（PR作成、Issue作成、コメント投稿など）は一切提供していません。
 
