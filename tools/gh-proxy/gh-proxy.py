@@ -517,21 +517,9 @@ def application(environ: Dict[str, Any], start_response) -> List[bytes]:
         return [b"Content-Type must be application/json"]
 
     # リクエストボディの読み取り
-    try:
-        content_length = int(environ.get("CONTENT_LENGTH", 0))
-        request_body = environ["wsgi.input"].read(content_length)
-        request = json.loads(request_body.decode("utf-8"))
-    except json.JSONDecodeError:
-        response = create_error_response(None, PARSE_ERROR, "JSONのパースに失敗しました")
-        response_body = json.dumps(response).encode("utf-8")
-        start_response("200 OK", [
-            ("Content-Type", "application/json"),
-            ("Content-Length", str(len(response_body)))
-        ])
-        return [response_body]
-    except Exception as e:
-        start_response("400 Bad Request", [("Content-Type", "text/plain")])
-        return [f"リクエストの読み取りに失敗しました: {str(e)}".encode("utf-8")]
+    content_length = int(environ.get("CONTENT_LENGTH", 0))
+    request_body = environ["wsgi.input"].read(content_length)
+    request = json.loads(request_body.decode("utf-8"))
 
     # JSON-RPCリクエスト処理
     response = handle_jsonrpc_request(request)
@@ -553,7 +541,7 @@ def main():
     print()
     print("サーバーを起動しています...")
 
-    with make_server("127.0.0.1", PORT, application) as httpd:
+    with make_server("", PORT, application) as httpd:
         print(f"サーバーが起動しました: http://127.0.0.1:{PORT}")
         print("Ctrl+C で停止します")
         try:
