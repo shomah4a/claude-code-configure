@@ -12,5 +12,5 @@ $(HOME)/.claude/agents/%.md: .claude/agents/%.md
 	mkdir -p $(HOME)/.claude/agents
 	cp -f $< $@
 
-tts-server:
-	python3 tools/tts-server/tts-server.py
+launch-servers:
+	python3 tools/tool-launcher/launcher.py
