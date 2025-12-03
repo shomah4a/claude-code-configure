@@ -18,6 +18,7 @@ services:
       - ~/.claude:/home/ubuntu/.config/claude
       - ~/.gitconfig:/home/ubuntu/.gitconfig:ro
       - ~/.ivy2/cache:/home/ubuntu/.ivy2/cache
+      - ../mcp-servers.json:/etc/claude-code/managed-mcp.json:ro
 
       - ../tools/tts-client/tts.sh:/home/ubuntu/bin/tts:ro
       - ../commands/cc-notification:/home/ubuntu/bin/cc-notification:ro
