@@ -4,7 +4,9 @@
     "allow": [
       "Bash(tts:*)",
       "Bash(./gradlew compileKotlin:*)",
-      "Bash(./gradlew formatKotlin:*)"
+      "Bash(./gradlew formatKotlin:*)",
+      "Bash(mkdir:*)",
+      "Bash(echo:*)"
     ]
   },
   "hooks": {
