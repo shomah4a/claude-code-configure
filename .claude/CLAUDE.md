@@ -124,7 +124,7 @@ prefixのあとは作業概要を簡潔にまとめた名前をつけてくだ�
 ### 作業フィードバックについて
 
 ユーザーの求めに応じて作業指示のフィードバックを $HOME/.claude/prompt-report/ にmarkdownで書き出すこと。
-書き出し先は `$HOME/.claude/prompt-report/${repo_name}/${date time prefix}_$description.md` とします。
+書き出し先は `~/.claude/prompt-report/${repo_name}/${date time prefix}_$description.md` とします。
 
 #### フィードバックの内容・目的
 
@@ -143,7 +143,7 @@ prefixのあとは作業概要を簡潔にまとめた名前をつけてくだ�
 ### ナレッジ書き出し
 
 ユーザーの求めに応じて対話セッション中で新しく認識したリポジトリの構造やルールについて書き出してください。
-書き出し先は `$HOME/.claude/knowledge/${repo_name}/${date time prefix}_$description.md` とします。
+書き出し先は `~/.claude/knowledge/${repo_name}/${date time prefix}_$description.md` とします。
 
 #### 記録すべき内容
 
@@ -164,7 +164,7 @@ AIがソースコードから推測した内容とユーザーの実際の認識
 ### プロンプトログの書き出し
 
 ユーザーの求めに応じて対話セッション中のログを書き出してください。長い入力であっても省略しないでください。
-書き出し先は `$HOME/.claude/prompt-log/${repo_name}/${date time prefix}_$description.md` とします。
+書き出し先は `~/.claude/prompt-log/${repo_name}/${date time prefix}_$description.md` とします。
 
 目的としては、開発の再現性担保のためにpull requestに「このような対話によって生成されました」というログを書き込んでおくためのものです。
 
