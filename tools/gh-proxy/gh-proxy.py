@@ -565,6 +565,8 @@ def handle_jsonrpc_request(request: Dict[str, Any]) -> Dict[str, Any]:
     method = request.get("method")
     params = request.get("params", {})
 
+    print(f'method={method}, params={json.dumps(params)}', file=sys.stderr)
+
     if not method:
         return create_error_response(
             request_id,
