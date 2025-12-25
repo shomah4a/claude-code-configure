@@ -12,6 +12,7 @@ allowed-tools: Read, Write, Grep, Glob
 date time prefix は以下のようにしてください。
 
 - date コマンドを利用してログ出力処理時の現在時刻を取得する
+  - フォーマットは `+%Y-%m-%d_%H-%M` とする
 - タイムゾーンはAsia/Tokyoとする
 
 ## フィードバックの内容・目的

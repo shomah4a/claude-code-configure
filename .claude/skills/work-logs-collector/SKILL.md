@@ -4,8 +4,12 @@ description: 三点セットログを出力する
 allowed-tools: Read, Write, Grep, Glob
 ---
 
-# 以下のツールを呼び出して、それぞれのログを出力する
+# 三点セットログ
 
-- work-logs-knowledge-log
-- work-logs-prompt-log
-- work-logs-prompt-report
+3つのログを出力するためのスキル。
+
+- ナレッジログ
+- プロンプトログ
+- プロンプトレポート
+
+具体的な内容はそれぞれのスキルを参照してください
