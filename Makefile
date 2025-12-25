@@ -1,16 +1,14 @@
-.PHONY: update tts-server
+CLAUDE_FILES := $(shell git ls-files .claude)
+HOME_CLAUDE_FILES := $(patsubst .claude/%,$(HOME)/.claude/%,$(CLAUDE_FILES))
 
-update: $(HOME)/.claude/CLAUDE.md $(HOME)/.claude/settings.json $(addprefix $(HOME)/,$(wildcard .claude/agents/*.md))
+.PHONY: update
 
-$(HOME)/.claude/CLAUDE.md: .claude/CLAUDE.md
+update: $(HOME_CLAUDE_FILES)
+
+$(HOME)/.claude/%: .claude/%
+	@mkdir -p $(dir $@)
 	cp -f $< $@
-
-$(HOME)/.claude/settings.json: .claude/settings.json
-	cp -f $< $@
-
-$(HOME)/.claude/agents/%.md: .claude/agents/%.md
-	mkdir -p $(HOME)/.claude/agents
-	cp -f $< $@
+	@echo "Copied $< -> $@"
 
 launch-servers:
 	python3 tools/tool-launcher/launcher.py
