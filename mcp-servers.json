@@ -2,7 +2,7 @@
   "mcpServers": {
     "gh-proxy": {
       "type": "http",
-      "url": "http://host.docker.internal:30721/"
+      "url": "http://localhost:30721/"
     }
   }
 }

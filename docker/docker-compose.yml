@@ -30,3 +30,4 @@ services:
     tty: true
     # デフォルトでbashシェルを起動
     command: ["bash"]
+    network_mode: host

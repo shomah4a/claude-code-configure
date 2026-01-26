@@ -1,7 +1,7 @@
 #!/bin/bash
 # TTSクライアント - 行ごと順次処理
 
-TTS_SERVER="${TTS_SERVER:-host.docker.internal:37721}"
+TTS_SERVER="${TTS_SERVER:-localhost:37721}"
 
 # TTSを実行する関数
 send_to_tts() {
