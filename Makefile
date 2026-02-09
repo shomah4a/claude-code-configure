@@ -1,9 +1,16 @@
-CLAUDE_FILES := $(shell git ls-files .claude)
-HOME_CLAUDE_FILES := $(patsubst .claude/%,$(HOME)/.claude/%,$(CLAUDE_FILES))
+SYNC_DIRS := rules agents skills
+ROOT_FILES := CLAUDE.md settings.json
+HOME_ROOT_FILES := $(patsubst %,$(HOME)/.claude/%,$(ROOT_FILES))
 
-.PHONY: update tts/enable tts/disable
+.PHONY: update sync-dirs tts/enable tts/disable
 
-update: $(HOME_CLAUDE_FILES)
+update: sync-dirs $(HOME_ROOT_FILES)
+
+sync-dirs:
+	@for dir in $(SYNC_DIRS); do \
+		mkdir -p $(HOME)/.claude/$$dir; \
+		rsync -av --delete .claude/$$dir/ $(HOME)/.claude/$$dir/; \
+	done
 
 $(HOME)/.claude/%: .claude/%
 	@mkdir -p $(dir $@)
