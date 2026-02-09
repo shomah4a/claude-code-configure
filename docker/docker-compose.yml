@@ -8,6 +8,7 @@ services:
     environment:
       - USER_ID=${UID:-1000}
       - GROUP_ID=${GID:-1000}
+      - CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
 
     volumes:
       # 現在のディレクトリをワークスペースとしてマウント
