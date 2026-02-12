@@ -9,6 +9,7 @@ services:
       - USER_ID=${UID:-1000}
       - GROUP_ID=${GID:-1000}
       - CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+      - CLAUDE_CODE_ENABLE_PROMT_SUGGSTION=0
 
     volumes:
       # 現在のディレクトリをワークスペースとしてマウント
