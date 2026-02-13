@@ -17,6 +17,7 @@ RUN dnf update -y && \
     poppler-utils \
     wget \
     which \
+    emacs-nox \
     && dnf clean all
 
 # Node.js 22のインストール
