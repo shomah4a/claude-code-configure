@@ -23,10 +23,10 @@ services:
       - ~/.ivy2/cache:/home/ubuntu/.ivy2/cache
       - ../mcp-servers.json:/etc/claude-code/managed-mcp.json:ro
 
-      - ../tools/tts-client/tts.sh:/home/ubuntu/bin/tts:ro
-      - ../commands/cc-notification:/home/ubuntu/bin/cc-notification:ro
-      - ../commands/cc-stop:/home/ubuntu/bin/cc-stop:ro
-      - ../commands/cc-pre-tool:/home/ubuntu/bin/cc-pre-tool:ro
+      - ../tools/tts-client/tts.sh:/usr/bin/tts:ro
+      - ../commands/cc-notification:/usr/bin/cc-notification:ro
+      - ../commands/cc-stop:/usr/bin/cc-stop:ro
+      - ../commands/cc-pre-tool:/usr/bin/cc-pre-tool:ro
     working_dir: ${PWD}
     stdin_open: true
     tty: true
