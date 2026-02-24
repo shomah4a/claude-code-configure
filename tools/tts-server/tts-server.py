@@ -77,7 +77,8 @@ class TTSEngine:
                         break
 
                 return True
-            except:
+            except Exception:
+                traceback.print_exc()
                 # プロセスが死んでいたら再起動
                 self._cleanup()
                 self._start_process()
@@ -91,7 +92,8 @@ class TTSEngine:
                 self.process.stdin.flush()
                 self.process.terminate()
                 self.process.wait(timeout=2)
-            except:
+            except Exception:
+                traceback.print_exc()
                 self.process.kill()
 
 # グローバルTTSエンジン
@@ -102,7 +104,8 @@ def is_ip_allowed(environ):
     try:
         ip_addr = ipaddress.ip_address(environ.get('REMOTE_ADDR', ''))
         return ip_addr.is_private or ip_addr.is_loopback
-    except:
+    except ValueError:
+        traceback.print_exc()
         return False
 
 def app(environ, start_response):
@@ -151,7 +154,7 @@ def app(environ, start_response):
             try:
                 rate = int(params.get('rate', SPEED))
                 rate = max(-10, min(10, rate))
-            except:
+            except Exception:
                 traceback.print_exc()
 
         if tts_engine.speak(text, rate):
