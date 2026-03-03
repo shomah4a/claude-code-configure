@@ -29,7 +29,7 @@ RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-li
 WORKDIR /app
 
 # Claude Codeをグローバルインストール
-RUN npm install -g @anthropic-ai/claude-code@2.1.45
+RUN npm install -g @anthropic-ai/claude-code@2.1.63
 
 # ubuntuユーザーの作成
 RUN useradd -m -s /bin/bash ubuntu
