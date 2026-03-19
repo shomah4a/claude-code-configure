@@ -25,11 +25,21 @@ ENV NODE_VERSION=22.17.1
 RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz \
     | tar -xJ -C /usr/local --strip-components=1
 
+# jdtls (jvm lsp)
+RUN mkdir /opt/jdtls
+WORKDIR /opt/jdtls
+RUN wget 'https://www.eclipse.org/downloads/download.php?file=/jdtls/milestones/1.57.0/jdt-language-server-1.57.0-202602261110.tar.gz' -O /opt/jdtls/jdtls.tgz
+RUN tar xvf jdtls.tgz
+ENV PATH $PATH:/opt/jdtls/bin
+
 # 作業ディレクトリを設定
 WORKDIR /app
 
 # Claude Codeをグローバルインストール
-RUN npm install -g @anthropic-ai/claude-code@2.1.71
+RUN npm install -g @anthropic-ai/claude-code@2.1.77
+
+# Claude Code LSP Plugin
+# RUN claude plugins add jdtls-lsp@claude-plugins-official
 
 # ubuntuユーザーの作成
 RUN useradd -m -s /bin/bash ubuntu
@@ -39,6 +49,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD claude --version && java -version
 
 USER ubuntu
+
 
 RUN mkdir /home/ubuntu/.ivy2
 RUN mkdir /home/ubuntu/.config
