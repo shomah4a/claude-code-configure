@@ -25,6 +25,9 @@ ENV NODE_VERSION=22.17.1
 RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz \
     | tar -xJ -C /usr/local --strip-components=1
 
+# Claude Codeをグローバルインストール
+RUN npm install -g @anthropic-ai/claude-code@2.1.92
+
 # jdtls (jvm lsp)
 RUN mkdir /opt/jdtls
 WORKDIR /opt/jdtls
@@ -34,9 +37,6 @@ ENV PATH $PATH:/opt/jdtls/bin
 
 # 作業ディレクトリを設定
 WORKDIR /app
-
-# Claude Codeをグローバルインストール
-RUN npm install -g @anthropic-ai/claude-code@2.1.77
 
 # Claude Code LSP Plugin
 # RUN claude plugins add jdtls-lsp@claude-plugins-official
