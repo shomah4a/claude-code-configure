@@ -108,9 +108,11 @@ fun fetchUserName(userId: String, repository: UserRepository): String {
 - 時間量を扱うケースでは専用の型を利用する
   - java: java.time.Duration
 - 専用の型がない場合は変数名に単位(`_min`, `_sec`, `_ms` など)をつける
+  - snake_case なのか camelCase なのか kebab-case なのかは言語の慣習に従うこと
 
 
 ## mutabilityの限定
 
-- ローカル変数やprivate memberのみmutableなデータ構造を許容する
-- interface境界ではimmutableなデータ構造のみをやり取りすること
+- mutableな構造が露出するスコープは最小に留めなければならない
+  - ローカル変数やprivate memberのみmutableなデータ構造を許容する
+  - interface境界ではimmutableなデータ構造のみをやり取りすること
