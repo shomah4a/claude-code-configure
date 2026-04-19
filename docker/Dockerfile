@@ -26,7 +26,7 @@ RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-li
     | tar -xJ -C /usr/local --strip-components=1
 
 # Claude Codeをグローバルインストール
-RUN npm install -g @anthropic-ai/claude-code@2.1.92
+RUN npm install -g @anthropic-ai/claude-code@2.1.114
 
 # jdtls (jvm lsp)
 RUN mkdir /opt/jdtls
