@@ -28,13 +28,6 @@ RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-li
 # Claude Codeをグローバルインストール
 RUN npm install -g @anthropic-ai/claude-code@2.1.114
 
-# jdtls (jvm lsp)
-RUN mkdir /opt/jdtls
-WORKDIR /opt/jdtls
-RUN wget 'https://www.eclipse.org/downloads/download.php?file=/jdtls/milestones/1.57.0/jdt-language-server-1.57.0-202602261110.tar.gz' -O /opt/jdtls/jdtls.tgz
-RUN tar xvf jdtls.tgz
-ENV PATH $PATH:/opt/jdtls/bin
-
 # 作業ディレクトリを設定
 WORKDIR /app
 
