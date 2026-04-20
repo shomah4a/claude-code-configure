@@ -2,20 +2,48 @@
 """セッションログ(JSONL)からユーザーメッセージを抽出し、分析用サマリーを出力する。
 
 Usage:
-    python3 extract-session-messages.py <project-session-dir>
+    python3 extract-session-messages.py <project-session-dir> [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+
+期間指定:
+    --since / --until はいずれも UTC 日付として解釈する。
+    --since 省略時は 現在日 - 14日
+    --until 省略時は 現在日
+    境界は両端包含 (since の 00:00:00 UTC から until の 23:59:59.999 UTC まで)
 
 出力: 各セッションのユーザーメッセージ一覧と統計情報をstdoutに出力する。
 """
 
+from __future__ import annotations
+
+import argparse
 import json
-import os
 import sys
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-def extract_user_messages(jsonl_path: str) -> list[str]:
-    """JSONLファイルからユーザーメッセージを抽出する。"""
+DEFAULT_WINDOW_DAYS = 14
+
+
+def parse_date(s: str) -> datetime:
+    """YYYY-MM-DD を UTC の 00:00:00 の datetime に変換する。"""
+    return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+
+def parse_timestamp(ts: str) -> datetime | None:
+    """JSONL の timestamp フィールド (ISO 8601, Z 終端想定) を datetime に変換する。"""
+    if not ts:
+        return None
+    try:
+        # "2026-04-20T14:47:57.148Z" → fromisoformat は Z を解釈できないため置換
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def extract_user_messages(jsonl_path: str, since: datetime, until_exclusive: datetime) -> list[str]:
+    """JSONLファイルからユーザーメッセージを抽出する。期間外のメッセージは除外する。"""
     messages = []
     with open(jsonl_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -25,6 +53,13 @@ def extract_user_messages(jsonl_path: str) -> list[str]:
                 continue
 
             if obj.get("userType") != "external" or obj.get("type") != "user":
+                continue
+
+            ts = parse_timestamp(obj.get("timestamp", ""))
+            if ts is None:
+                # timestamp が欠損しているレコードは期間判定不能なためスキップ
+                continue
+            if ts < since or ts >= until_exclusive:
                 continue
 
             msg = obj.get("message", {})
@@ -150,14 +185,46 @@ def detect_engagement_style(categories: Counter, total: int) -> dict:
     }
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 extract-session-messages.py <project-session-dir>", file=sys.stderr)
-        sys.exit(1)
+def resolve_date_range(since_arg: str | None, until_arg: str | None, now: datetime) -> tuple[datetime, datetime]:
+    """CLI引数から期間を決定する。戻り値は (since_inclusive, until_exclusive)。"""
+    today_utc_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    session_dir = Path(sys.argv[1])
+    if since_arg:
+        since = parse_date(since_arg)
+    else:
+        since = today_utc_midnight - timedelta(days=DEFAULT_WINDOW_DAYS)
+
+    if until_arg:
+        until_inclusive_day = parse_date(until_arg)
+    else:
+        until_inclusive_day = today_utc_midnight
+
+    # until の日を包含するため翌日 00:00 を半開区間の上端として返す
+    until_exclusive = until_inclusive_day + timedelta(days=1)
+    return since, until_exclusive
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("session_dir", help="プロジェクトのセッションディレクトリ")
+    parser.add_argument("--since", help="開始日 YYYY-MM-DD (UTC, inclusive)。省略時は現在日-14日")
+    parser.add_argument("--until", help="終了日 YYYY-MM-DD (UTC, inclusive)。省略時は現在日")
+    args = parser.parse_args()
+
+    session_dir = Path(args.session_dir)
     if not session_dir.is_dir():
         print(f"Error: {session_dir} is not a directory", file=sys.stderr)
+        sys.exit(1)
+
+    now = datetime.now(tz=timezone.utc)
+    try:
+        since, until_exclusive = resolve_date_range(args.since, args.until, now)
+    except ValueError as e:
+        print(f"Error: 日付のパースに失敗しました: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if since >= until_exclusive:
+        print(f"Error: --since は --until より前の日付を指定してください", file=sys.stderr)
         sys.exit(1)
 
     jsonl_files = sorted(session_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
@@ -171,7 +238,7 @@ def main():
     session_summaries = []
 
     for jsonl_path in jsonl_files:
-        messages = extract_user_messages(str(jsonl_path))
+        messages = extract_user_messages(str(jsonl_path), since, until_exclusive)
         if not messages:
             continue
 
@@ -203,7 +270,12 @@ def main():
             # 長すぎるメッセージは切り詰める
             samples[cat].append(msg[:200])
 
+    until_inclusive_display = (until_exclusive - timedelta(days=1)).strftime("%Y-%m-%d")
     output = {
+        "date_range": {
+            "since": since.strftime("%Y-%m-%d"),
+            "until": until_inclusive_display,
+        },
         "total_messages": total,
         "total_sessions": len(session_summaries),
         "context_overflows": all_categories.get("context_overflow_continuation", 0),
