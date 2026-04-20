@@ -6,9 +6,10 @@ Usage:
 
 期間指定:
     --since / --until はいずれも UTC 日付として解釈する。
-    --since 省略時は 現在日 - 14日
-    --until 省略時は 現在日
+    --since 省略時は 「実行時の現在日 − 14日 (UTC)」
+    --until 省略時は 「履歴の終端」(上限なし)
     境界は両端包含 (since の 00:00:00 UTC から until の 23:59:59.999 UTC まで)
+    --until 単独指定 (--since なし) は受け付けない。
 
 出力: 各セッションのユーザーメッセージ一覧と統計情報をstdoutに出力する。
 """
@@ -42,8 +43,11 @@ def parse_timestamp(ts: str) -> datetime | None:
         return None
 
 
-def extract_user_messages(jsonl_path: str, since: datetime, until_exclusive: datetime) -> list[str]:
-    """JSONLファイルからユーザーメッセージを抽出する。期間外のメッセージは除外する。"""
+def extract_user_messages(jsonl_path: str, since: datetime, until_exclusive: datetime | None) -> list[str]:
+    """JSONLファイルからユーザーメッセージを抽出する。期間外のメッセージは除外する。
+
+    until_exclusive が None の場合は上端チェックを行わない (履歴終端まで全件対象)。
+    """
     messages = []
     with open(jsonl_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -59,7 +63,9 @@ def extract_user_messages(jsonl_path: str, since: datetime, until_exclusive: dat
             if ts is None:
                 # timestamp が欠損しているレコードは期間判定不能なためスキップ
                 continue
-            if ts < since or ts >= until_exclusive:
+            if ts < since:
+                continue
+            if until_exclusive is not None and ts >= until_exclusive:
                 continue
 
             msg = obj.get("message", {})
@@ -185,22 +191,25 @@ def detect_engagement_style(categories: Counter, total: int) -> dict:
     }
 
 
-def resolve_date_range(since_arg: str | None, until_arg: str | None, now: datetime) -> tuple[datetime, datetime]:
-    """CLI引数から期間を決定する。戻り値は (since_inclusive, until_exclusive)。"""
-    today_utc_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+def resolve_date_range(since_arg: str | None, until_arg: str | None, now: datetime) -> tuple[datetime, datetime | None]:
+    """CLI引数から期間を決定する。
 
+    戻り値: (since_inclusive, until_exclusive_or_None)
+    - since_arg 省略時は 「now(UTC) の当日 00:00 − 14日」を返す
+    - until_arg 省略時は上端を設けない (None を返す = 履歴終端まで)
+    """
     if since_arg:
         since = parse_date(since_arg)
     else:
+        today_utc_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         since = today_utc_midnight - timedelta(days=DEFAULT_WINDOW_DAYS)
 
     if until_arg:
-        until_inclusive_day = parse_date(until_arg)
+        # until の日を包含するため翌日 00:00 を半開区間の上端として返す
+        until_exclusive = parse_date(until_arg) + timedelta(days=1)
     else:
-        until_inclusive_day = today_utc_midnight
+        until_exclusive = None
 
-    # until の日を包含するため翌日 00:00 を半開区間の上端として返す
-    until_exclusive = until_inclusive_day + timedelta(days=1)
     return since, until_exclusive
 
 
@@ -208,8 +217,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("session_dir", help="プロジェクトのセッションディレクトリ")
     parser.add_argument("--since", help="開始日 YYYY-MM-DD (UTC, inclusive)。省略時は現在日-14日")
-    parser.add_argument("--until", help="終了日 YYYY-MM-DD (UTC, inclusive)。省略時は現在日")
+    parser.add_argument("--until", help="終了日 YYYY-MM-DD (UTC, inclusive)。省略時は履歴終端")
     args = parser.parse_args()
+
+    if args.until and not args.since:
+        # --until 単独は解釈が曖昧 (直近14日の起点と明示された終端の組み合わせは意図不明瞭) なため拒否する
+        print("Error: --until を指定する場合は --since も併せて指定してください", file=sys.stderr)
+        sys.exit(1)
 
     session_dir = Path(args.session_dir)
     if not session_dir.is_dir():
@@ -223,8 +237,11 @@ def main():
         print(f"Error: 日付のパースに失敗しました: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if since >= until_exclusive:
-        print(f"Error: --since は --until より前の日付を指定してください", file=sys.stderr)
+    # until_exclusive は --until 指定時のみ設定される。
+    # since (inclusive 当日 00:00) >= until_exclusive (指定日翌日 00:00) は
+    # CLI 入力上の since > until と同値 (当日指定=同日はOK、翌日以降の until は通過)。
+    if until_exclusive is not None and since >= until_exclusive:
+        print("Error: --since は --until と同日かそれ以前の日付を指定してください", file=sys.stderr)
         sys.exit(1)
 
     jsonl_files = sorted(session_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
@@ -270,7 +287,11 @@ def main():
             # 長すぎるメッセージは切り詰める
             samples[cat].append(msg[:200])
 
-    until_inclusive_display = (until_exclusive - timedelta(days=1)).strftime("%Y-%m-%d")
+    until_inclusive_display = (
+        (until_exclusive - timedelta(days=1)).strftime("%Y-%m-%d")
+        if until_exclusive is not None
+        else None
+    )
     output = {
         "date_range": {
             "since": since.strftime("%Y-%m-%d"),

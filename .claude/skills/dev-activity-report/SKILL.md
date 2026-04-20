@@ -11,13 +11,15 @@ description: Claude Codeを利用した開発活動の評価レポートを生�
 
 スキル引数は最大2つ受け取る。いずれも `YYYY-MM-DD` 形式の UTC 日付として解釈する。
 
-- 引数なし: 直近14日 (`since = 現在日 − 14日`、`until = 現在日`)
-- 引数1つ (`<since>`): `since` から現在日まで
-- 引数2つ (`<since> <until>`): 指定レンジ（両端包含）
+- 引数なし: `since = 現在日 − 14日 (UTC)`、`until` 指定なし (履歴終端まで)
+- 引数1つ (`<since>`): `since` を指定、`until` 指定なし (履歴終端まで)
+- 引数2つ (`<since> <until>`): 指定レンジ (両端包含)
 
 引数のフォーマットが不正な場合、または `since > until` の場合はレポート生成を中止してユーザーに指摘すること。
 
-以降のステップでは、確定した `<since>` と `<until>` を使用する。
+以降のステップで後続ツール (python スクリプト / git log) に渡す際、引数1つ以下のケースでは `--until` を付与しないこと。付与すると意味合いが変わる (= 指定日時点で打ち切る)。
+
+以降のステップでは、確定した `<since>` と、指定があれば `<until>` を使用する。
 
 ## Step 1: プロジェクトのセッションディレクトリを特定する
 
@@ -28,19 +30,24 @@ description: Claude Codeを利用した開発活動の評価レポートを生�
 
 ## Step 2: セッションログからユーザーメッセージを抽出する
 
-以下のスクリプトを実行してセッションログの分析結果を取得する:
+以下のスクリプトを実行してセッションログの分析結果を取得する。`<until>` が未確定の場合は `--until` を付与しないこと:
 
 ```bash
+# 引数2つ指定時
 python3 ${CLAUDE_SKILL_DIR}/extract-session-messages.py \
     ~/.claude/projects/<プロジェクトディレクトリ>/ \
     --since <since> --until <until>
+
+# 引数1つ指定時 / 引数なし時 (--until を付けない)
+python3 ${CLAUDE_SKILL_DIR}/extract-session-messages.py \
+    ~/.claude/projects/<プロジェクトディレクトリ>/ \
+    --since <since>
 ```
 
-引数なしで呼ばれた場合はスクリプト側のデフォルト (直近14日) が適用されるため、`--since/--until` を省略しても可。
-ただしレポートの一貫性のため、Step 0 で決定した日付を明示的に渡すことを推奨する。
+`--since` を省略した場合はスクリプト側のデフォルト (現在日 − 14日 UTC) が適用される。
 
 出力はJSON形式で以下を含む:
-- `date_range`: 適用された対象期間 (`since`, `until` いずれも `YYYY-MM-DD`)
+- `date_range`: 適用された対象期間 (`since` は `YYYY-MM-DD`、`until` は `YYYY-MM-DD` または `null` (履歴終端))
 - `total_messages`: 期間内の総メッセージ数
 - `total_sessions`: 期間内にメッセージがあったセッション数
 - `context_overflows`: コンテキスト溢れ回数
@@ -51,22 +58,29 @@ python3 ${CLAUDE_SKILL_DIR}/extract-session-messages.py \
 ## Step 3: コミット履歴を取得する
 
 期間指定を git log に反映する。
-`git log --until` は exclusive で解釈されるため、`<until>` の当日を包含するには翌日を渡すこと。
-シェル上では `until_exclusive=$(date -u -d "<until> + 1 day" +%Y-%m-%d)` のように求める。
+
+git は `--since/--until` に日付のみを渡すと **実行環境のローカルタイムゾーン** で解釈するため、
+タイムゾーンオフセットを必ず明示し、Python 側と同じ UTC 基準で揃える。
+また `git log --until` は exclusive で解釈されるため、`<until>` の当日を包含するには翌日を渡すこと。
 
 ```bash
+# until 指定時のみ必要
+until_exclusive=$(date -u -d "<until> + 1 day" +%Y-%m-%d)
+
 # 総コミット数
-git log --oneline --all --since=<since> --until=<until_exclusive> | wc -l
+git log --oneline --all --since="<since> 00:00:00 +0000" [--until="${until_exclusive} 00:00:00 +0000"] | wc -l
 
 # コミット一覧
-git log --oneline --all --since=<since> --until=<until_exclusive>
+git log --oneline --all --since="<since> 00:00:00 +0000" [--until="${until_exclusive} 00:00:00 +0000"]
 
 # 日別コミット数
-git log --format='%ai' --all --since=<since> --until=<until_exclusive> | awk '{print $1}' | sort | uniq -c | sort -k2
+git log --format='%ai' --all --since="<since> 00:00:00 +0000" [--until="${until_exclusive} 00:00:00 +0000"] | awk '{print $1}' | sort | uniq -c | sort -k2
 
 # 総変更量
-git log --all --shortstat --format='' --since=<since> --until=<until_exclusive> | awk '/files changed/ {f+=$1; a+=$4; d+=$6} END {print "Files:", f, "Add:", a, "Del:", d}'
+git log --all --shortstat --format='' --since="<since> 00:00:00 +0000" [--until="${until_exclusive} 00:00:00 +0000"] | awk '/files changed/ {f+=$1; a+=$4; d+=$6} END {print "Files:", f, "Add:", a, "Del:", d}'
 ```
+
+`[...]` で囲った `--until` は Step 0 で `<until>` が確定している場合のみ付与する。未確定時は省略し、履歴終端まで走査する。
 
 ## Step 4: レポートを生成する
 
@@ -77,7 +91,7 @@ git log --all --shortstat --format='' --since=<since> --until=<until_exclusive> 
 
 #### 1. 概要
 - プロジェクト名
-- 対象期間 (`<since>` 〜 `<until>`。Step 2 の `date_range` と一致させること)
+- 対象期間 (`<since>` 〜 `<until>`。`<until>` 未確定時は「`<since>` 以降」と表記する。Step 2 の `date_range` と一致させること)
 - コミット数、変更量、セッション数
 
 #### 2. 関与スタイル判定
