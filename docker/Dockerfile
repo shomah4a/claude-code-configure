@@ -51,9 +51,11 @@ RUN mkdir /home/ubuntu/.ivy2
 RUN mkdir /home/ubuntu/.config
 RUN mkdir /home/ubuntu/bin
 
-RUN echo 'PATH=$PATH:$HOME/bin' > /home/ubuntu/.bashrc
-RUN echo 'alias myclaude="claude --permission-mode auto"' > /home/ubuntu/.bashrc
-RUN echo 'alias mycodex="codex -s danger-full-access -a on-request"' > /home/ubuntu/.bashrc
+RUN cat <<'EOF' > /home/ubuntu/.bashrc
+PATH=$PATH:$HOME/bin
+alias myclaude="claude --permission-mode auto"
+alias mycodex="codex -s danger-full-access -a on-request"
+EOF
 
 
 # デフォルトコマンド

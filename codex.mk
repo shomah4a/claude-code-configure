@@ -25,6 +25,7 @@ $(CODEX_SKILLS_STAMP): $(CLAUDE_SKILL_FILES) $(CLAUDE_SKILL_EXTRA_FILES) $(CLAUD
 	for src_dir in .claude/skills/*; do \
 		[ -d "$$src_dir" ] || continue; \
 		skill_name="$$(basename "$$src_dir")"; \
+		case "$$skill_name" in codex-*) continue ;; esac; \
 		src_skill="$$src_dir/SKILL.md"; \
 		dst_dir=".codex/skills/$$skill_name"; \
 		mkdir -p "$$dst_dir"; \
