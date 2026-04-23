@@ -26,4 +26,6 @@ mycodex exec "{スキル引数}"
 codex -s danger-full-access -a on-request exec "{スキル引数}"
 ```
 
+**注意**: Bashツールの `timeout` は `600000`（10分）に設定すること。Codexの応答には時間がかかる場合がある。
+
 2. コマンドの出力をそのまま加工せずにユーザーに表示する。要約や編集は行わないこと。

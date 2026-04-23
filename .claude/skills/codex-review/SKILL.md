@@ -43,6 +43,8 @@ mycodex exec "{組み立てたプロンプト}"
 codex -s danger-full-access -a on-request exec "{組み立てたプロンプト}"
 ```
 
+**注意**: Bashツールの `timeout` は `600000`（10分）に設定すること。Codexの応答には時間がかかる場合がある。
+
 ### Step 3: 結果を出力する
 
 1. コマンドの出力全文を `.claude/tmp/YYYY-MM-DD_HH-MM_codex-review.md` に書き出す（`YYYY-MM-DD_HH-MM` は実行日時）。加工・要約せず、そのまま全文を書き出すこと。
