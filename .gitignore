@@ -1,4 +1,6 @@
 .claude/tmp/
+.codex/
+.codex.generated/
 
 # Emacs一時ファイル
 *~

@@ -1,13 +1,17 @@
-SYNC_DIRS := rules agents skills
-ROOT_FILES := CLAUDE.md settings.json
-HOME_ROOT_FILES := $(patsubst %,$(HOME)/.claude/%,$(ROOT_FILES))
+include codex.mk
 
-.PHONY: update sync-dirs tts/enable tts/disable
+CLAUDE_SYNC_DIRS := rules agents skills
+CLAUDE_ROOT_FILES := CLAUDE.md settings.json
+CLAUDE_HOME_ROOT_FILES := $(patsubst %,$(HOME)/.claude/%,$(CLAUDE_ROOT_FILES))
 
-update: sync-dirs $(HOME_ROOT_FILES)
+.PHONY: update sync-dirs claude/sync launch-servers tts/enable tts/disable
 
-sync-dirs:
-	@for dir in $(SYNC_DIRS); do \
+update: codex/generate claude/sync $(CLAUDE_HOME_ROOT_FILES) codex/sync $(CODEX_HOME_ROOT_FILES)
+
+sync-dirs: claude/sync
+
+claude/sync:
+	@for dir in $(CLAUDE_SYNC_DIRS); do \
 		mkdir -p $(HOME)/.claude/$$dir; \
 		rsync -av --delete .claude/$$dir/ $(HOME)/.claude/$$dir/; \
 	done
