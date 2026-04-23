@@ -28,6 +28,9 @@ RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-li
 # Claude Codeをグローバルインストール
 RUN npm install -g @anthropic-ai/claude-code@2.1.104
 
+# Codex をグローバルインストール
+RUN npm install -g @openai/codex@0.123.0
+
 # 作業ディレクトリを設定
 WORKDIR /app
 
@@ -49,6 +52,9 @@ RUN mkdir /home/ubuntu/.config
 RUN mkdir /home/ubuntu/bin
 
 RUN echo 'PATH=$PATH:$HOME/bin' > /home/ubuntu/.bashrc
+RUN echo 'alias myclaude="claude --permission-mode auto"' > /home/ubuntu/.bashrc
+RUN echo 'alias mycodex="codex -s danger-full-access -a on-request"' > /home/ubuntu/.bashrc
+
 
 # デフォルトコマンド
 CMD ["claude"]

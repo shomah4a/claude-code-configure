@@ -18,6 +18,7 @@ services:
       # - ~/.gitconfig:/tmp/.gitconfig:ro
       - ~/.claude:/home/ubuntu/.claude
       - ~/.claude:/home/ubuntu/.config/claude
+      - ~/.codex:/home/ubuntu/.codex
       - ~/.docker.claude.json:/home/ubuntu/.claude.json
       - ~/.gitconfig:/home/ubuntu/.gitconfig:ro
       - ~/.ivy2/cache:/home/ubuntu/.ivy2/cache
