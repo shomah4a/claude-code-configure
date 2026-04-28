@@ -9,6 +9,7 @@ YAML設定ファイルで定義された上流サーバーに対し、
 
 import argparse
 import dataclasses
+import fnmatch
 import json
 import os
 import sys
@@ -43,6 +44,8 @@ class UpstreamServer:
     endpoint: str
     transport_type: str
     auth: Optional[Union[AuthBearer, AuthHeader]] = None
+    allow_tools: List[str] = dataclasses.field(default_factory=list)
+    deny_tools: List[str] = dataclasses.field(default_factory=list)
 
 
 def parse_auth(auth_config: Optional[Dict[str, Any]]) -> Optional[Union[AuthBearer, AuthHeader]]:
@@ -103,16 +106,60 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
             continue
 
         auth = parse_auth(conf.get("auth"))
+        allow_tools = conf.get("allow-tools", [])
+        deny_tools = conf.get("deny-tools", [])
         servers.append(
             UpstreamServer(
                 key=key,
                 endpoint=endpoint,
                 transport_type=transport_type,
                 auth=auth,
+                allow_tools=allow_tools,
+                deny_tools=deny_tools,
             )
         )
 
     return servers
+
+
+def is_tool_allowed(tool_name: str, server: UpstreamServer) -> bool:
+    """ツール名がサーバーのallow/deny設定で許可されているか判定する"""
+    allowed = True
+
+    if server.allow_tools:
+        allowed = any(
+            fnmatch.fnmatch(tool_name, pattern)
+            for pattern in server.allow_tools
+        )
+
+    if allowed and server.deny_tools:
+        denied = any(
+            fnmatch.fnmatch(tool_name, pattern)
+            for pattern in server.deny_tools
+        )
+        if denied:
+            allowed = False
+
+    return allowed
+
+
+def filter_tools_list_response(
+    response_body: bytes, server: UpstreamServer
+) -> bytes:
+    """tools/listレスポンスからallow/denyに基づいてツールをフィルタリングする"""
+    if not server.allow_tools and not server.deny_tools:
+        return response_body
+
+    data = json.loads(response_body)
+    result = data.get("result")
+    if result is None or "tools" not in result:
+        return response_body
+
+    result["tools"] = [
+        tool for tool in result["tools"]
+        if is_tool_allowed(tool.get("name", ""), server)
+    ]
+    return json.dumps(data).encode("utf-8")
 
 
 def build_upstream_headers(server: UpstreamServer) -> Dict[str, str]:
@@ -206,6 +253,34 @@ class McpProxyApp:
         content_length = int(environ.get("CONTENT_LENGTH", 0))
         request_body = environ["wsgi.input"].read(content_length)
 
+        # tools/call時のアクセス制御
+        request_data = json.loads(request_body)
+        method = request_data.get("method", "")
+        request_id = request_data.get("id")
+
+        if method == "tools/call":
+            tool_name = request_data.get("params", {}).get("name", "")
+            if not is_tool_allowed(tool_name, server):
+                print(
+                    f"[{server.key}] ツール拒否: {tool_name}",
+                    file=sys.stderr,
+                )
+                start_response(
+                    "200 OK",
+                    [("Content-Type", "application/json")],
+                )
+                error_response = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"ツール '{tool_name}' は許可されていません",
+                        },
+                    }
+                )
+                return [error_response.encode("utf-8")]
+
         print(
             f"[{server.key}] 転送: {server.endpoint}",
             file=sys.stderr,
@@ -227,7 +302,7 @@ class McpProxyApp:
             error_response = json.dumps(
                 {
                     "jsonrpc": "2.0",
-                    "id": None,
+                    "id": request_id,
                     "error": {
                         "code": -32603,
                         "message": f"上流サーバーエラー: {e.code}",
@@ -246,7 +321,7 @@ class McpProxyApp:
             error_response = json.dumps(
                 {
                     "jsonrpc": "2.0",
-                    "id": None,
+                    "id": request_id,
                     "error": {
                         "code": -32603,
                         "message": f"上流サーバー接続エラー: {e.reason}",
@@ -254,6 +329,12 @@ class McpProxyApp:
                 }
             )
             return [error_response.encode("utf-8")]
+
+        # tools/listレスポンスのフィルタリング
+        if method == "tools/list":
+            response_body = filter_tools_list_response(
+                response_body, server
+            )
 
         start_response(
             "200 OK",

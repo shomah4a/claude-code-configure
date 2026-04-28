@@ -387,6 +387,213 @@ class WSGIハンドラテスト(unittest.TestCase):
         self.assertIn("Connection refused", error_json["error"]["message"])
 
 
+class ツールフィルタリングテスト(unittest.TestCase):
+
+    def _server(
+        self, allow_tools: List[str] = None, deny_tools: List[str] = None
+    ) -> mcp_proxy.UpstreamServer:
+        return mcp_proxy.UpstreamServer(
+            key="test",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            allow_tools=allow_tools or [],
+            deny_tools=deny_tools or [],
+        )
+
+    def test_指定なしの場合は全ツールが許可される(self):
+        server = self._server()
+        self.assertTrue(mcp_proxy.is_tool_allowed("any_tool", server))
+
+    def test_allowに完全一致するツールは許可される(self):
+        server = self._server(allow_tools=["query", "list"])
+        self.assertTrue(mcp_proxy.is_tool_allowed("query", server))
+
+    def test_allowに含まれないツールは拒否される(self):
+        server = self._server(allow_tools=["query", "list"])
+        self.assertFalse(mcp_proxy.is_tool_allowed("delete", server))
+
+    def test_allowのglobパターンにマッチするツールは許可される(self):
+        server = self._server(allow_tools=["query_*"])
+        self.assertTrue(mcp_proxy.is_tool_allowed("query_nrql", server))
+        self.assertFalse(mcp_proxy.is_tool_allowed("delete_dashboard", server))
+
+    def test_denyに一致するツールは拒否される(self):
+        server = self._server(deny_tools=["delete"])
+        self.assertFalse(mcp_proxy.is_tool_allowed("delete", server))
+        self.assertTrue(mcp_proxy.is_tool_allowed("query", server))
+
+    def test_denyのglobパターンにマッチするツールは拒否される(self):
+        server = self._server(deny_tools=["delete_*"])
+        self.assertFalse(mcp_proxy.is_tool_allowed("delete_dashboard", server))
+        self.assertTrue(mcp_proxy.is_tool_allowed("query_nrql", server))
+
+    def test_allowとdeny両方指定時はdenyが優先される(self):
+        server = self._server(
+            allow_tools=["query_*"],
+            deny_tools=["query_dangerous"],
+        )
+        self.assertTrue(mcp_proxy.is_tool_allowed("query_nrql", server))
+        self.assertFalse(mcp_proxy.is_tool_allowed("query_dangerous", server))
+        self.assertFalse(mcp_proxy.is_tool_allowed("delete", server))
+
+
+class ツールリストフィルタリングテスト(unittest.TestCase):
+
+    def _server(
+        self, allow_tools: List[str] = None, deny_tools: List[str] = None
+    ) -> mcp_proxy.UpstreamServer:
+        return mcp_proxy.UpstreamServer(
+            key="test",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            allow_tools=allow_tools or [],
+            deny_tools=deny_tools or [],
+        )
+
+    def test_フィルタ未設定の場合はレスポンスがそのまま返る(self):
+        server = self._server()
+        response = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "tools": [
+                    {"name": "query"},
+                    {"name": "delete"},
+                ]
+            }
+        }).encode("utf-8")
+
+        result = mcp_proxy.filter_tools_list_response(response, server)
+        self.assertEqual(result, response)
+
+    def test_allowに基づいてツールがフィルタリングされる(self):
+        server = self._server(allow_tools=["query_*"])
+        response = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "tools": [
+                    {"name": "query_nrql"},
+                    {"name": "delete_dashboard"},
+                ]
+            }
+        }).encode("utf-8")
+
+        result = json.loads(mcp_proxy.filter_tools_list_response(response, server))
+        tool_names = [t["name"] for t in result["result"]["tools"]]
+        self.assertEqual(tool_names, ["query_nrql"])
+
+    def test_denyに基づいてツールがフィルタリングされる(self):
+        server = self._server(deny_tools=["delete_*"])
+        response = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "tools": [
+                    {"name": "query_nrql"},
+                    {"name": "delete_dashboard"},
+                ]
+            }
+        }).encode("utf-8")
+
+        result = json.loads(mcp_proxy.filter_tools_list_response(response, server))
+        tool_names = [t["name"] for t in result["result"]["tools"]]
+        self.assertEqual(tool_names, ["query_nrql"])
+
+
+class WSGIハンドラツールフィルタテスト(unittest.TestCase):
+
+    def _make_filtered_app(
+        self,
+        allow_tools: List[str] = None,
+        deny_tools: List[str] = None,
+        forward_func: Callable = None,
+    ) -> mcp_proxy.McpProxyApp:
+        servers = [
+            mcp_proxy.UpstreamServer(
+                key="test-server",
+                endpoint="https://test.example.com/mcp/",
+                transport_type="http",
+                allow_tools=allow_tools or [],
+                deny_tools=deny_tools or [],
+            ),
+        ]
+        if forward_func is None:
+            forward_func = lambda s, b, t: b'{"jsonrpc":"2.0","id":1,"result":{}}'
+        return mcp_proxy.McpProxyApp(servers, 30, forward_func=forward_func)
+
+    def test_拒否されたツールのcallはエラーを返す(self):
+        app = self._make_filtered_app(deny_tools=["delete_*"])
+        request_body = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "tools/call",
+            "params": {"name": "delete_dashboard"},
+        }).encode("utf-8")
+        environ = _build_environ(path="/test-server", body=request_body)
+        resp = _ResponseCapture()
+
+        body = app(environ, resp)
+
+        self.assertEqual(resp.status, "200 OK")
+        result = json.loads(body[0])
+        self.assertEqual(result["id"], 42)
+        self.assertEqual(result["error"]["code"], -32601)
+
+    def test_許可されたツールのcallは上流に転送される(self):
+        forwarded = {"called": False}
+
+        def fake_forward(server, body, timeout):
+            forwarded["called"] = True
+            return b'{"jsonrpc":"2.0","id":1,"result":{"content":[]}}'
+
+        app = self._make_filtered_app(
+            deny_tools=["delete_*"], forward_func=fake_forward
+        )
+        request_body = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "query_nrql"},
+        }).encode("utf-8")
+        environ = _build_environ(path="/test-server", body=request_body)
+        resp = _ResponseCapture()
+
+        app(environ, resp)
+
+        self.assertTrue(forwarded["called"])
+
+    def test_tools_listのレスポンスがフィルタリングされる(self):
+        upstream_response = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "tools": [
+                    {"name": "query_nrql", "description": "query"},
+                    {"name": "delete_dashboard", "description": "delete"},
+                ]
+            }
+        }).encode("utf-8")
+
+        app = self._make_filtered_app(
+            deny_tools=["delete_*"],
+            forward_func=lambda s, b, t: upstream_response,
+        )
+        request_body = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+        }).encode("utf-8")
+        environ = _build_environ(path="/test-server", body=request_body)
+        resp = _ResponseCapture()
+
+        body = app(environ, resp)
+
+        result = json.loads(body[0])
+        tool_names = [t["name"] for t in result["result"]["tools"]]
+        self.assertEqual(tool_names, ["query_nrql"])
+
+
 class 認証設定パーステスト(unittest.TestCase):
 
     def test_Noneを渡すとNoneが返る(self):
