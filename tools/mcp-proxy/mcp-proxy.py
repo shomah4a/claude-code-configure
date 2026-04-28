@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""
+MCP Proxy Server
+
+インターネット上のMCPサーバーへのリクエストを中継する透過プロキシ。
+YAML設定ファイルで定義された上流サーバーに対し、
+認証ヘッダーを付与してJSON-RPCリクエストをそのまま転送する。
+"""
+
+import argparse
+import dataclasses
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Union
+from wsgiref.simple_server import make_server
+
+import yaml
+
+
+PORT = 38247
+TIMEOUT_SEC = 30
+DEFAULT_CONFIG_PATH = Path.home() / ".mcp-server.yaml"
+
+
+@dataclasses.dataclass(frozen=True)
+class AuthBearer:
+    token: str
+
+
+@dataclasses.dataclass(frozen=True)
+class AuthHeader:
+    name: str
+    value: str
+
+
+@dataclasses.dataclass(frozen=True)
+class UpstreamServer:
+    key: str
+    endpoint: str
+    transport_type: str
+    auth: Optional[Union[AuthBearer, AuthHeader]] = None
+
+
+def parse_auth(auth_config: Optional[Dict[str, Any]]) -> Optional[Union[AuthBearer, AuthHeader]]:
+    """認証設定をパースする"""
+    if auth_config is None:
+        return None
+
+    auth_type = auth_config.get("type")
+    if auth_type == "bearer":
+        token = auth_config.get("token")
+        if not token:
+            raise ValueError("bearer認証にはtokenが必要です")
+        return AuthBearer(token=token)
+
+    if auth_type == "header":
+        name = auth_config.get("name")
+        value = auth_config.get("value")
+        if not name or not value:
+            raise ValueError("header認証にはnameとvalueが必要です")
+        return AuthHeader(name=name, value=value)
+
+    raise ValueError(f"未知の認証タイプ: {auth_type}")
+
+
+def load_config(config_path: Path) -> List[UpstreamServer]:
+    """YAML設定ファイルを読み込み、上流サーバーのリストを返す"""
+    if not config_path.exists():
+        print(f"設定ファイルが見つかりません: {config_path}", file=sys.stderr)
+        return []
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+
+    if not raw or "mcp-servers" not in raw:
+        print("設定ファイルにmcp-serversキーがありません", file=sys.stderr)
+        return []
+
+    servers = []
+    for key, conf in raw["mcp-servers"].items():
+        endpoint = conf.get("endpoint")
+        if not endpoint:
+            print(f"サーバー '{key}' にendpointが指定されていません", file=sys.stderr)
+            continue
+
+        transport_type = conf.get("type", "http")
+        if transport_type not in ("http", "sse"):
+            print(
+                f"サーバー '{key}' の未知のタイプ: {transport_type}",
+                file=sys.stderr,
+            )
+            continue
+
+        if transport_type == "sse":
+            print(
+                f"サーバー '{key}' はSSEタイプですが、現在はHTTPのみ対応しています。スキップします",
+                file=sys.stderr,
+            )
+            continue
+
+        auth = parse_auth(conf.get("auth"))
+        servers.append(
+            UpstreamServer(
+                key=key,
+                endpoint=endpoint,
+                transport_type=transport_type,
+                auth=auth,
+            )
+        )
+
+    return servers
+
+
+def build_upstream_headers(server: UpstreamServer) -> Dict[str, str]:
+    """上流サーバーへのリクエストに付与するヘッダーを構築する"""
+    headers = {"Content-Type": "application/json"}
+
+    if isinstance(server.auth, AuthBearer):
+        headers["Authorization"] = f"Bearer {server.auth.token}"
+    elif isinstance(server.auth, AuthHeader):
+        headers[server.auth.name] = server.auth.value
+
+    return headers
+
+
+def forward_request(
+    server: UpstreamServer, request_body: bytes, timeout_sec: int
+) -> bytes:
+    """リクエストを上流サーバーに転送し、レスポンスを返す"""
+    headers = build_upstream_headers(server)
+    req = urllib.request.Request(
+        server.endpoint,
+        data=request_body,
+        headers=headers,
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+        return resp.read()
+
+
+def resolve_server(
+    servers: Dict[str, UpstreamServer], path: str
+) -> Optional[UpstreamServer]:
+    """リクエストパスから対応する上流サーバーを解決する"""
+    key = path.strip("/")
+    return servers.get(key)
+
+
+def generate_mcp_json(servers: List[UpstreamServer]) -> str:
+    """設定からmcp-servers.json相当の内容を生成する"""
+    mcp_servers = {}
+    for server in servers:
+        mcp_servers[server.key] = {
+            "type": "http",
+            "url": f"http://localhost:{PORT}/{server.key}",
+        }
+    return json.dumps({"mcpServers": mcp_servers}, indent=2, ensure_ascii=False)
+
+
+ForwardFunc = Callable[[UpstreamServer, bytes, int], bytes]
+
+
+class McpProxyApp:
+    """WSGI MCPプロキシアプリケーション"""
+
+    def __init__(
+        self,
+        servers: List[UpstreamServer],
+        timeout_sec: int,
+        forward_func: ForwardFunc = forward_request,
+    ):
+        self._servers = {s.key: s for s in servers}
+        self._timeout_sec = timeout_sec
+        self._forward = forward_func
+
+    def __call__(
+        self, environ: Dict[str, Any], start_response
+    ) -> List[bytes]:
+        if environ["REQUEST_METHOD"] != "POST":
+            start_response(
+                "405 Method Not Allowed", [("Content-Type", "text/plain")]
+            )
+            return [b"Method Not Allowed"]
+
+        content_type = environ.get("CONTENT_TYPE", "")
+        if not content_type.startswith("application/json"):
+            start_response(
+                "415 Unsupported Media Type",
+                [("Content-Type", "text/plain")],
+            )
+            return [b"Content-Type must be application/json"]
+
+        path = environ.get("PATH_INFO", "/")
+        server = resolve_server(self._servers, path)
+        if server is None:
+            start_response(
+                "404 Not Found", [("Content-Type", "text/plain")]
+            )
+            return [f"未知のサーバー: {path}".encode("utf-8")]
+
+        content_length = int(environ.get("CONTENT_LENGTH", 0))
+        request_body = environ["wsgi.input"].read(content_length)
+
+        print(
+            f"[{server.key}] 転送: {server.endpoint}",
+            file=sys.stderr,
+        )
+
+        try:
+            response_body = self._forward(
+                server, request_body, self._timeout_sec
+            )
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8", errors="replace")
+            print(
+                f"[{server.key}] 上流エラー: {e.code} {error_body}",
+                file=sys.stderr,
+            )
+            start_response(
+                "502 Bad Gateway", [("Content-Type", "application/json")]
+            )
+            error_response = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32603,
+                        "message": f"上流サーバーエラー: {e.code}",
+                    },
+                }
+            )
+            return [error_response.encode("utf-8")]
+        except urllib.error.URLError as e:
+            print(
+                f"[{server.key}] 接続エラー: {e.reason}",
+                file=sys.stderr,
+            )
+            start_response(
+                "502 Bad Gateway", [("Content-Type", "application/json")]
+            )
+            error_response = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32603,
+                        "message": f"上流サーバー接続エラー: {e.reason}",
+                    },
+                }
+            )
+            return [error_response.encode("utf-8")]
+
+        start_response(
+            "200 OK",
+            [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(response_body))),
+            ],
+        )
+        return [response_body]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="MCP Proxy Server")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help=f"設定ファイルのパス (デフォルト: {DEFAULT_CONFIG_PATH})",
+    )
+    parser.add_argument(
+        "--generate-mcp-json",
+        action="store_true",
+        help="mcp-servers.json相当の内容をstdoutに出力して終了",
+    )
+    args = parser.parse_args()
+
+    servers = load_config(args.config)
+    if not servers:
+        print("有効な上流サーバーがありません", file=sys.stderr)
+        return 1
+
+    if args.generate_mcp_json:
+        print(generate_mcp_json(servers))
+        return 0
+
+    app = McpProxyApp(servers, TIMEOUT_SEC)
+
+    print(f"MCP Proxy Server", file=sys.stderr)
+    print(f"Port: {PORT}", file=sys.stderr)
+    print(f"上流サーバー:", file=sys.stderr)
+    for server in servers:
+        print(f"  /{server.key} -> {server.endpoint}", file=sys.stderr)
+    print(file=sys.stderr)
+
+    with make_server("", PORT, app) as httpd:
+        print(
+            f"サーバーが起動しました: http://127.0.0.1:{PORT}",
+            file=sys.stderr,
+        )
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nサーバーを停止しています...", file=sys.stderr)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -12,3 +12,6 @@
 *.pyo
 *.py[cod]
 __pycache__/
+
+# venv
+tools/mcp-proxy/venv/
