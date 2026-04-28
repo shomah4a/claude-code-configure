@@ -24,7 +24,7 @@ import yaml
 
 PORT = 38247
 TIMEOUT_SEC = 30
-DEFAULT_CONFIG_PATH = Path.home() / ".mcp-server.yaml"
+DEFAULT_CONFIG_PATH = Path.home() / ".mcp-proxy.d" / "mcp-servers.yml"
 
 
 @dataclasses.dataclass(frozen=True)
