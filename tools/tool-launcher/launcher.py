@@ -20,10 +20,12 @@ class Tool:
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _tts_server_path = os.path.normpath(os.path.join(_script_dir, "..", "tts-server", "tts-server.py"))
 _gh_proxy_path = os.path.normpath(os.path.join(_script_dir, "..", "gh-proxy", "gh-proxy.py"))
+_mcp_proxy_path = os.path.normpath(os.path.join(_script_dir, "..", "mcp-proxy", "mcp-proxy.py"))
 
 TOOLS = [
     Tool(name="tts-server", command=["python3", _tts_server_path]),
     Tool(name="gh-proxy", command=["python3", _gh_proxy_path]),
+    Tool(name="mcp-proxy", command=["python3", _mcp_proxy_path]),
 ]
 
 
