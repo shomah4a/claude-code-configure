@@ -46,7 +46,7 @@ class 設定ファイル読み込みテスト(unittest.TestCase):
             self.assertIsInstance(servers[0].auth, mcp_proxy.AuthBearer)
             self.assertEqual(servers[0].auth.token, "test-token-123")
 
-    def test_header認証を含む設定を読み込める(self):
+    def test_header認証で複数ヘッダーを含む設定を読み込める(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             config_path = self._write_yaml(Path(tmp), """\
@@ -56,15 +56,16 @@ class 設定ファイル読み込みテスト(unittest.TestCase):
                     type: http
                     auth:
                       type: header
-                      name: X-Api-Key
-                      value: my-api-key
+                      headers:
+                        Api-Key: NRAK-xxx
+                        Account-Id: "12345"
             """)
             servers = mcp_proxy.load_config(config_path)
 
             self.assertEqual(len(servers), 1)
             self.assertIsInstance(servers[0].auth, mcp_proxy.AuthHeader)
-            self.assertEqual(servers[0].auth.name, "X-Api-Key")
-            self.assertEqual(servers[0].auth.value, "my-api-key")
+            self.assertEqual(servers[0].auth.headers["Api-Key"], "NRAK-xxx")
+            self.assertEqual(servers[0].auth.headers["Account-Id"], "12345")
 
     def test_認証なしの設定を読み込める(self):
         import tempfile
@@ -148,33 +149,65 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
             transport_type="http",
             auth=mcp_proxy.AuthBearer(token="my-token"),
         )
-        headers = mcp_proxy.build_upstream_headers(server)
+        headers = mcp_proxy.build_upstream_headers(server, {})
 
         self.assertEqual(headers["Authorization"], "Bearer my-token")
         self.assertEqual(headers["Content-Type"], "application/json")
 
-    def test_header認証のヘッダーが構築される(self):
+    def test_header認証で複数ヘッダーが構築される(self):
         server = mcp_proxy.UpstreamServer(
             key="test",
             endpoint="https://example.com/mcp/",
             transport_type="http",
-            auth=mcp_proxy.AuthHeader(name="X-Api-Key", value="key-123"),
+            auth=mcp_proxy.AuthHeader(headers={
+                "Api-Key": "NRAK-xxx",
+                "Account-Id": "12345",
+            }),
         )
-        headers = mcp_proxy.build_upstream_headers(server)
+        headers = mcp_proxy.build_upstream_headers(server, {})
 
-        self.assertEqual(headers["X-Api-Key"], "key-123")
+        self.assertEqual(headers["Api-Key"], "NRAK-xxx")
+        self.assertEqual(headers["Account-Id"], "12345")
         self.assertEqual(headers["Content-Type"], "application/json")
 
-    def test_認証なしの場合はContentTypeのみ(self):
+    def test_クライアントヘッダーがパススルーされる(self):
         server = mcp_proxy.UpstreamServer(
             key="test",
             endpoint="https://example.com/mcp/",
             transport_type="http",
             auth=None,
         )
-        headers = mcp_proxy.build_upstream_headers(server)
+        client_headers = {"X-Request-Id": "req-001"}
+        headers = mcp_proxy.build_upstream_headers(server, client_headers)
 
-        self.assertEqual(headers, {"Content-Type": "application/json"})
+        self.assertEqual(headers["X-Request-Id"], "req-001")
+        self.assertEqual(headers["Content-Type"], "application/json")
+
+    def test_YAML認証ヘッダーがクライアントヘッダーより優先される(self):
+        server = mcp_proxy.UpstreamServer(
+            key="test",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            auth=mcp_proxy.AuthHeader(headers={"Authorization": "from-yaml"}),
+        )
+        client_headers = {"Authorization": "from-client"}
+        headers = mcp_proxy.build_upstream_headers(server, client_headers)
+
+        self.assertEqual(headers["Authorization"], "from-yaml")
+
+    def test_認証なしの場合はデフォルトヘッダーのみ(self):
+        server = mcp_proxy.UpstreamServer(
+            key="test",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            auth=None,
+        )
+        headers = mcp_proxy.build_upstream_headers(server, {})
+
+        self.assertEqual(
+            headers,
+            {"Content-Type": "application/json", "Accept": "application/json"},
+        )
 
 
 class パスルーティングテスト(unittest.TestCase):
@@ -277,7 +310,7 @@ def _make_app(
         ),
     ]
     if forward_func is None:
-        forward_func = lambda server, body, timeout: b'{"jsonrpc":"2.0","id":1,"result":{}}'
+        forward_func = lambda server, body, timeout, headers: b'{"jsonrpc":"2.0","id":1,"result":{}}'
     return mcp_proxy.McpProxyApp(servers, 30, forward_func=forward_func)
 
 
@@ -315,7 +348,7 @@ class WSGIハンドラテスト(unittest.TestCase):
     def test_正常なリクエストは上流のレスポンスをそのまま返す(self):
         upstream_response = b'{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}'
 
-        def fake_forward(server, body, timeout):
+        def fake_forward(server, body, timeout, headers):
             return upstream_response
 
         app = _make_app(forward_func=fake_forward)
@@ -331,7 +364,7 @@ class WSGIハンドラテスト(unittest.TestCase):
     def test_転送関数にサーバー情報とリクエストボディが渡される(self):
         received = {}
 
-        def capturing_forward(server, body, timeout):
+        def capturing_forward(server, body, timeout, headers):
             received["server_key"] = server.key
             received["body"] = body
             received["timeout"] = timeout
@@ -349,7 +382,7 @@ class WSGIハンドラテスト(unittest.TestCase):
         self.assertEqual(received["timeout"], 30)
 
     def test_上流HTTPError時は502とJSON_RPCエラーを返す(self):
-        def error_forward(server, body, timeout):
+        def error_forward(server, body, timeout, headers):
             raise urllib.error.HTTPError(
                 url="https://test.example.com/mcp/",
                 code=500,
@@ -371,7 +404,7 @@ class WSGIハンドラテスト(unittest.TestCase):
         self.assertIn("500", error_json["error"]["message"])
 
     def test_上流URLError時は502とJSON_RPCエラーを返す(self):
-        def error_forward(server, body, timeout):
+        def error_forward(server, body, timeout, headers):
             raise urllib.error.URLError(reason="Connection refused")
 
         app = _make_app(forward_func=error_forward)
@@ -543,7 +576,7 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
     def test_許可されたツールのcallは上流に転送される(self):
         forwarded = {"called": False}
 
-        def fake_forward(server, body, timeout):
+        def fake_forward(server, body, timeout, headers):
             forwarded["called"] = True
             return b'{"jsonrpc":"2.0","id":1,"result":{"content":[]}}'
 
@@ -577,7 +610,7 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
 
         app = self._make_filtered_app(
             deny_tools=["delete_*"],
-            forward_func=lambda s, b, t: upstream_response,
+            forward_func=lambda s, b, t, h: upstream_response,
         )
         request_body = json.dumps({
             "jsonrpc": "2.0",
@@ -607,13 +640,17 @@ class 認証設定パーステスト(unittest.TestCase):
         with self.assertRaises(ValueError):
             mcp_proxy.parse_auth({"type": "bearer"})
 
-    def test_headerでnameが未指定だとValueErrorが発生する(self):
+    def test_headerでheadersが未指定だとValueErrorが発生する(self):
         with self.assertRaises(ValueError):
-            mcp_proxy.parse_auth({"type": "header", "value": "v"})
+            mcp_proxy.parse_auth({"type": "header"})
 
-    def test_headerでvalueが未指定だとValueErrorが発生する(self):
+    def test_headerでheadersが辞書でないとValueErrorが発生する(self):
         with self.assertRaises(ValueError):
-            mcp_proxy.parse_auth({"type": "header", "name": "n"})
+            mcp_proxy.parse_auth({"type": "header", "headers": "not-a-dict"})
+
+    def test_headerでheadersが空辞書だとValueErrorが発生する(self):
+        with self.assertRaises(ValueError):
+            mcp_proxy.parse_auth({"type": "header", "headers": {}})
 
 
 if __name__ == "__main__":

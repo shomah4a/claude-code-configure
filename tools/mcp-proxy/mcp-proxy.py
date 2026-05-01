@@ -34,8 +34,7 @@ class AuthBearer:
 
 @dataclasses.dataclass(frozen=True)
 class AuthHeader:
-    name: str
-    value: str
+    headers: Dict[str, str]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -61,11 +60,10 @@ def parse_auth(auth_config: Optional[Dict[str, Any]]) -> Optional[Union[AuthBear
         return AuthBearer(token=token)
 
     if auth_type == "header":
-        name = auth_config.get("name")
-        value = auth_config.get("value")
-        if not name or not value:
-            raise ValueError("header認証にはnameとvalueが必要です")
-        return AuthHeader(name=name, value=value)
+        headers = auth_config.get("headers")
+        if not headers or not isinstance(headers, dict):
+            raise ValueError("header認証にはheaders（辞書）が必要です")
+        return AuthHeader(headers=headers)
 
     raise ValueError(f"未知の認証タイプ: {auth_type}")
 
@@ -162,23 +160,52 @@ def filter_tools_list_response(
     return json.dumps(data).encode("utf-8")
 
 
-def build_upstream_headers(server: UpstreamServer) -> Dict[str, str]:
-    """上流サーバーへのリクエストに付与するヘッダーを構築する"""
-    headers = {"Content-Type": "application/json"}
+def extract_client_headers(environ: Dict[str, Any]) -> Dict[str, str]:
+    """WSGIのenvironからクライアントが送信したHTTPヘッダーを抽出する"""
+    headers = {}
+    for key, value in environ.items():
+        if key.startswith("HTTP_"):
+            header_name = key[5:].replace("_", "-").title()
+            headers[header_name] = value
+    if "CONTENT_TYPE" in environ:
+        headers["Content-Type"] = environ["CONTENT_TYPE"]
+    return headers
+
+
+def build_upstream_headers(
+    server: UpstreamServer,
+    client_headers: Dict[str, str],
+) -> Dict[str, str]:
+    """上流サーバーへのリクエストに付与するヘッダーを構築する
+
+    優先順位（後勝ち）:
+    1. プロキシのデフォルト (Content-Type, Accept)
+    2. クライアントからのパススルーヘッダー
+    3. YAML認証ヘッダー
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    headers.update(client_headers)
 
     if isinstance(server.auth, AuthBearer):
         headers["Authorization"] = f"Bearer {server.auth.token}"
     elif isinstance(server.auth, AuthHeader):
-        headers[server.auth.name] = server.auth.value
+        headers.update(server.auth.headers)
 
     return headers
 
 
 def forward_request(
-    server: UpstreamServer, request_body: bytes, timeout_sec: int
+    server: UpstreamServer,
+    request_body: bytes,
+    timeout_sec: int,
+    client_headers: Dict[str, str],
 ) -> bytes:
     """リクエストを上流サーバーに転送し、レスポンスを返す"""
-    headers = build_upstream_headers(server)
+    headers = build_upstream_headers(server, client_headers)
     req = urllib.request.Request(
         server.endpoint,
         data=request_body,
@@ -209,7 +236,7 @@ def generate_mcp_json(servers: List[UpstreamServer]) -> str:
     return json.dumps({"mcpServers": mcp_servers}, indent=2, ensure_ascii=False)
 
 
-ForwardFunc = Callable[[UpstreamServer, bytes, int], bytes]
+ForwardFunc = Callable[[UpstreamServer, bytes, int, Dict[str, str]], bytes]
 
 
 class McpProxyApp:
@@ -281,6 +308,8 @@ class McpProxyApp:
                 )
                 return [error_response.encode("utf-8")]
 
+        client_headers = extract_client_headers(environ)
+
         print(
             f"[{server.key}] 転送: {server.endpoint}",
             file=sys.stderr,
@@ -288,7 +317,7 @@ class McpProxyApp:
 
         try:
             response_body = self._forward(
-                server, request_body, self._timeout_sec
+                server, request_body, self._timeout_sec, client_headers
             )
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace")
