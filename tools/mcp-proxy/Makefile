@@ -1,8 +1,9 @@
-.PHONY: setup serve
+.PHONY: serve
 
-setup:
+venv/.initialized: requirements.txt
 	python3 -m venv venv
 	venv/bin/pip install -r requirements.txt
+	touch $@
 
-serve:
+serve: venv/.initialized
 	venv/bin/python3 mcp-proxy.py
