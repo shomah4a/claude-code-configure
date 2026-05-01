@@ -3,6 +3,10 @@
     "gh-proxy": {
       "type": "http",
       "url": "http://localhost:30721/"
+    },
+    "thanos-management": {
+      "type": "sse",
+      "url": "http://localhost:22930/sse"
     }
   }
 }
