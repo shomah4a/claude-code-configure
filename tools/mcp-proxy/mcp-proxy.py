@@ -160,13 +160,31 @@ def filter_tools_list_response(
     return json.dumps(data).encode("utf-8")
 
 
+_HOP_BY_HOP_HEADERS = frozenset({
+    "Host",
+    "Connection",
+    "Keep-Alive",
+    "Transfer-Encoding",
+    "Te",
+    "Trailer",
+    "Upgrade",
+    "Proxy-Authorization",
+    "Proxy-Authenticate",
+    "Content-Length",
+})
+
+
 def extract_client_headers(environ: Dict[str, Any]) -> Dict[str, str]:
-    """WSGIのenvironからクライアントが送信したHTTPヘッダーを抽出する"""
+    """WSGIのenvironからクライアントが送信したHTTPヘッダーを抽出する
+
+    プロキシとして上流に転送すべきでないホップバイホップヘッダーは除外する。
+    """
     headers = {}
     for key, value in environ.items():
         if key.startswith("HTTP_"):
             header_name = key[5:].replace("_", "-").title()
-            headers[header_name] = value
+            if header_name not in _HOP_BY_HOP_HEADERS:
+                headers[header_name] = value
     if "CONTENT_TYPE" in environ:
         headers["Content-Type"] = environ["CONTENT_TYPE"]
     return headers
