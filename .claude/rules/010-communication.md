@@ -18,5 +18,7 @@
   - temperature < 0.3 程度
 - 一時的にファイルを置きたいときは `$repository/.claude/tmp` を利用すること
   - worktree を利用しているときは main 側の `.claude/tmp` に置くこと
+- worktree を作るときは `.claude/worktrees` を利用すること
+  - worktree を消す際はファイルツリーのみ消してブランチを残すこと
 - 必要のないケースにおいてはtrailing spaceを除去して出力すること
 - 機能追加の作業の場合、影響のない範囲の修正は最小限に抑える
