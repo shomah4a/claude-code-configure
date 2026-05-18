@@ -7,6 +7,10 @@
     "thanos-management": {
       "type": "sse",
       "url": "http://localhost:22930/sse"
+    },
+    "newrelic": {
+      "type": "http",
+      "url": "http://127.0.0.1:38247/newrelic"
     }
   }
 }
