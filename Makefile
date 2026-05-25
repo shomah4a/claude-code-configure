@@ -1,6 +1,6 @@
 include codex.mk
 
-CLAUDE_SYNC_DIRS := rules agents skills
+CLAUDE_SYNC_DIRS := rules agents skills docs
 CLAUDE_ROOT_FILES := CLAUDE.md settings.json
 CLAUDE_HOME_ROOT_FILES := $(patsubst %,$(HOME)/.claude/%,$(CLAUDE_ROOT_FILES))
 
