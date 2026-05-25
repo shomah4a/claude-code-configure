@@ -1,6 +1,6 @@
 # 設計原則 — The Zen of Python
 
-出典: https://peps.python.org/pep-0020/
+詳細解説と出典は `.claude/docs/zen-of-python-detail.md` を参照。
 
 本ルールの優先度は高い。判断に迷った場合はこのルールに立ち返ること。
 Python固有の原則ではなく、ソフトウェア設計全般に適用する。
@@ -103,12 +103,6 @@ Python固有の原則ではなく、ソフトウェア設計全般に適用す�
 
 - 同一プロジェクト内で同じ問題に対して複数の解法パターンを混在させないこと
 - 新しいパターンを導入する場合はユーザーに確認を求め、既存パターンとの共存方針を決めること
-
-## Although that way may not be obvious at first unless you're Dutch.
-
-オランダ人でない限り、最初は明白でないかもしれないけれど。
-
-※ ユーモア項目のため具象化対象外とする。
 
 ## Now is better than never.
 
