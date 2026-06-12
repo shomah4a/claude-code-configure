@@ -6,7 +6,7 @@ CLAUDE_HOME_ROOT_FILES := $(patsubst %,$(HOME)/.claude/%,$(CLAUDE_ROOT_FILES))
 
 .PHONY: update sync-dirs claude/sync launch-servers tts/enable tts/disable
 
-update: codex/generate claude/sync $(CLAUDE_HOME_ROOT_FILES) codex/sync $(CODEX_HOME_ROOT_FILES)
+update: codex/generate claude/sync $(CLAUDE_HOME_ROOT_FILES) codex/sync $(CODEX_HOME_ROOT_FILES) mcp-servers.json
 
 sync-dirs: claude/sync
 
@@ -29,3 +29,6 @@ tts/enable:
 
 tts/disable:
 	curl -X POST http://localhost:37721/disable
+	
+mcp-servers.json: mcp-servers.template.json
+	cp -f $< $@
