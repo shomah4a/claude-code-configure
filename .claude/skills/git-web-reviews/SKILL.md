@@ -3,7 +3,8 @@ name: git-web-reviews
 description: >-
   git-web の diff view で付けたレビューコメント (.git-web/reviews/<sha>.jsonl) を読み取り、
   未解決の指摘を蒸留した一覧で返す。「(git-web の) レビューコメントに対応して」「diff のコメントを
-  読んで直して」「コメントを反映して」等で使う。引数 from/to で対象リビジョン範囲を絞れる。
+  読んで直して」「コメントを反映して」等で使う。引数なしなら今のブランチの差分 (base..HEAD) が対象。
+  引数 from/to で対象リビジョン範囲を明示できる。
 argument-hint: "[from] [to]"
 context: fork
 agent: general-purpose
@@ -24,7 +25,9 @@ agent: general-purpose
 
 - `$1` = `from`, `$2` = `to` (いずれも任意): diff view と同じリビジョン範囲。
   指定があれば `from..to` に含まれるコミットのコメントだけを対象にする。
-- 省略時: `.git-web/reviews/` の全コメント (全コミット) を対象にする。
+- 省略時 (デフォルト): **今のブランチの差分** = 既定ブランチとの `merge-base..HEAD` に
+  含まれるコミットのコメントを対象にする。ベースブランチ上などで差分が無ければ
+  「未解決コメントなし」を返す。
 
 ## 読み取りルール (固定フォーマット)
 
@@ -43,10 +46,17 @@ agent: general-purpose
 1. メイン worktree ルートを求める:
    `root=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")`
    - `$root/.git-web/reviews/` が無ければ「未解決コメントなし」と返して終了
-2. 対象コミット SHA を決める:
-   - `from`/`to` 指定あり: `git rev-list <from>..<to>` ∪ `git rev-parse <to>` を、
-     `$root/.git-web/reviews/` に実在する `<sha>.jsonl` と交差させる
-   - 指定なし: `<sha>.jsonl` (`*.resolved.jsonl` を除く) の全 SHA
+2. 対象コミット SHA を決める (決めた集合は最後に `$root/.git-web/reviews/` に実在する
+   `<sha>.jsonl` と交差させる):
+   - `from`/`to` 指定あり: `git rev-list <from>..<to>` ∪ `git rev-parse <to>`
+   - 指定なし (デフォルト = 今のブランチの差分):
+     a. 既定ブランチを `main` → `master` の順で探し、存在するものを baseBranch とする
+     b. baseBranch があれば `base=$(git merge-base <baseBranch> HEAD)` とし、
+        対象集合 = `git rev-list <base>..HEAD`
+        - これが空 (ベースブランチ上など、ブランチ固有コミットなし) なら
+          **「未解決コメントなし」と返して終了**
+     c. baseBranch が見つからない場合のみ、フォールバックとして全 `<sha>.jsonl`
+        (`*.resolved.jsonl` を除く) を対象にする
 3. 各 `<sha>.jsonl` を 1 行ずつ JSON parse する (壊れ行はスキップ)
 4. 各 `<sha>.resolved.jsonl` を id ごと最後勝ちで畳み込み、resolved を判定する
 5. **未解決 (resolved が true でない) コメントだけ** を、次の蒸留形式の一覧で返す
