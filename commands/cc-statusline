@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""
+Claude Code statusLine コマンド
+
+stdin で渡される statusLine JSON を読み取り、以下のテンプレートに従った
+1 行のステータス文字列を stdout へ出力する。
+
+  mode: <model_name>(<model_id>) context: <percent>% usage: <usage_5h>% git: <repo>@<branch> (<worktree_path>)
+
+JSON スキーマ: https://code.claude.com/docs/en/statusline.md
+
+設計方針:
+- 出力文字列の組み立ては純粋関数 build_status_line に集約し、
+  副作用（stdin 読込・git subprocess）は main 側へ外部化する。
+- git 情報（ブランチ・worktree 相対パス）は JSON に常設フィールドが無いため
+  subprocess で取得する。現在ブランチを常に与える JSON フィールドは存在せず
+  （worktree.branch は --worktree セッション限定で hook ベースでは absent）、
+  取得元を git subprocess 一本に統一する。
+- 表示スタイル（背景色・文字色）は ANSI エスケープシーケンスで付与する。
+  端末は印字文字にのみ背景色を乗せるため、行全体の横幅フルには塗らない。
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+# git subprocess のハング防止のための上限。statusLine は描画ごとに実行されるため短く保つ。
+GIT_TIMEOUT_SEC = 2
+
+# ANSI エスケープシーケンス（表示スタイル）
+RESET = "\033[0m"
+BG_LIGHT_GRAY = "\033[48;5;250m"  # 明るめの灰色背景（256 色: 250）
+FG_BASE = "\033[38;5;238m"  # 基本文字色: 暗めの灰色（256 色: 238）
+# context の閾値色。明るい背景でも読めるよう濃いめの緑/黄/赤を用いる。
+FG_GREEN = "\033[38;5;28m"
+FG_YELLOW = "\033[38;5;136m"
+FG_RED = "\033[38;5;160m"
+
+# 使用率の色分け閾値（%）。この値以下なら該当色を用いる。context / usage 共通。
+GREEN_MAX_PERCENT = 50
+YELLOW_MAX_PERCENT = 75
+
+# Claude Code は statusLine 行の左右に各 2 文字のマージンを設けるため、
+# 実効表示幅は COLUMNS からこの値を引いたものとする。
+STATUSLINE_MARGIN_COLUMNS = 4
+
+# SGR 色コード（\033[...m）を取り除いて表示幅を測るためのパターン。
+_SGR_PATTERN = re.compile(r"\033\[[0-9;]*m")
+
+
+def visible_length(text):
+    """SGR エスケープを除いた表示文字数を返す。
+
+    内容は ASCII（モデル名・id・リポジトリ名・ブランチ名）想定のため、
+    文字数 = 端末カラム数として扱う。
+    """
+    return len(_SGR_PATTERN.sub("", text))
+
+
+def percent_color(percent):
+    """使用率に応じた文字色エスケープを返す（context / usage 共用）。
+
+    閾値: <=50% 緑 / <=75% 黄 / それ以上 赤。
+    """
+    if percent <= GREEN_MAX_PERCENT:
+        return FG_GREEN
+    if percent <= YELLOW_MAX_PERCENT:
+        return FG_YELLOW
+    return FG_RED
+
+
+def distribute_segments(segments, columns):
+    """セグメント列を 1 行の本文へ連結する。
+
+    columns（端末カラム数）に余裕がある（単一スペース連結より広い）ときは、
+    セグメント間のスペースを均等配分する両端揃え（先頭は左端、末尾は右端、
+    間隔は均等。端数は先頭側の間隔へ寄せる）を行う。
+    余裕が無い / columns 不明のときは単一スペース連結し、columns が正なら
+    末尾をスペースで埋める。
+    """
+    joined_single = " ".join(segments)
+    gaps = len(segments) - 1
+    single_visible = visible_length(joined_single)
+
+    if columns <= 0 or gaps <= 0 or columns <= single_visible:
+        padding = " " * max(0, columns - single_visible) if columns > 0 else ""
+        return joined_single + padding
+
+    content_visible = sum(visible_length(seg) for seg in segments)
+    extra = columns - content_visible
+    base_gap, remainder = divmod(extra, gaps)
+
+    pieces = [segments[0]]
+    for index in range(1, len(segments)):
+        gap = base_gap + (1 if index <= remainder else 0)
+        pieces.append(" " * gap)
+        pieces.append(segments[index])
+    return "".join(pieces)
+
+
+def build_git_label(repo_name, branch, worktree_path):
+    """git 情報を repo@branch (worktree) 形式に整形する。
+
+    repo / branch のいずれかが欠けても二重区切りや余分な記号が残らないよう、
+    存在する要素のみを連結する。worktree_path は非空のときだけ括弧付きで付加する。
+    """
+    if repo_name and branch:
+        base = f"{repo_name}@{branch}"
+    else:
+        # 片方のみ存在する場合は @ を付けずにそのまま表示する。
+        base = repo_name or branch
+
+    if worktree_path:
+        base = f"{base} ({worktree_path})" if base else f"({worktree_path})"
+
+    return "git:" + (f" {base}" if base else "")
+
+
+def build_status_line(model_name, model_id, context_fill_percent, usage_5h_percent, repo_name, worktree_path, branch, columns):
+    """ステータス行を組み立てる純粋関数。
+
+    背景を明るい灰色、基本文字色を暗い灰色にし、context / usage 使用率を閾値で
+    色分けする。各ラベルは "label: value" 形式（コロンの後にスペース）で揃える。
+    usage_5h_percent が None（レート制限情報なし: 非対象プラン / 初回 API 応答前）の
+    ときは usage セグメントを省略する。
+    columns（端末カラム数）に余裕があるときはセグメント間を均等割り付けし、
+    背景を端末幅いっぱいに広げる（distribute_segments 参照）。
+    """
+    mode_part = f"mode: {model_name}({model_id})"
+
+    # 色付け後は既定ではなく基本文字色(FG_BASE)へ戻す（背景は維持される）。
+    context_part = f"context: {percent_color(context_fill_percent)}{context_fill_percent}%{FG_BASE}"
+
+    segments = [mode_part, context_part]
+
+    if usage_5h_percent is not None:
+        segments.append(f"usage: {percent_color(usage_5h_percent)}{usage_5h_percent}%{FG_BASE}")
+
+    segments.append(build_git_label(repo_name, branch, worktree_path))
+
+    body = distribute_segments(segments, columns)
+    return f"{BG_LIGHT_GRAY}{FG_BASE}{body}{RESET}"
+
+
+def _run_git(args, cwd):
+    """git コマンドを実行し標準出力を返す。
+
+    git 不在・git 外ディレクトリ・タイムアウトは statusLine では通常起こりうる状態のため、
+    例外を送出せず空文字へフォールバックする（表示が空になるだけで害がない）。
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SEC,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def resolve_worktree_path(cwd):
+    """メインリポジトリルートからの現在 worktree ルートの相対パスを返す。
+
+    メイン作業ツリーでは相対パスが "." になるため空文字を返す。
+    """
+    common_dir = _run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd)
+    toplevel = _run_git(["rev-parse", "--show-toplevel"], cwd)
+    if not common_dir or not toplevel:
+        return ""
+
+    # --git-common-dir はメインの .git を指すため、その親がメインリポジトリルート。
+    main_root = os.path.dirname(common_dir)
+    rel = os.path.relpath(toplevel, main_root)
+    if rel == ".":
+        return ""
+    return rel
+
+
+def collect_status(data):
+    """JSON データから純粋関数への入力を組み立てる（副作用を含む層）。"""
+    model = data.get("model", {})
+    model_name = model.get("display_name", "")
+    model_id = model.get("id", "")
+
+    # null（セッション初期 / compact 直後）・キー不在の両方を 0 へ畳む。
+    context_window = data.get("context_window", {}) or {}
+    context_fill_percent = int(context_window.get("used_percentage") or 0)
+
+    # 5 時間レート制限の使用率。非対象プラン / 初回 API 応答前は欠損するため、
+    # null・キー不在は None として usage セグメントを省略する（0% への畳み込みは
+    # 「使用率 0」と誤読されるため行わない）。
+    rate_limits = data.get("rate_limits", {}) or {}
+    five_hour = rate_limits.get("five_hour", {}) or {}
+    raw_usage_5h = five_hour.get("used_percentage")
+    usage_5h_percent = int(raw_usage_5h) if raw_usage_5h is not None else None
+
+    workspace = data.get("workspace", {})
+    repo_name = workspace.get("repo", {}).get("name", "")
+
+    # git subprocess の cwd は保証されないため、JSON から作業ディレクトリを明示注入する。
+    cwd = workspace.get("current_dir") or data.get("cwd") or os.getcwd()
+
+    worktree_path = resolve_worktree_path(cwd)
+    # detached HEAD では --show-current が空になるため short commit hash へ
+    # フォールバックする（コミットが無い空リポジトリでは双方空のまま）。
+    branch = _run_git(["branch", "--show-current"], cwd) or _run_git(["rev-parse", "--short", "HEAD"], cwd)
+
+    # 端末幅は stdout からは取得できず、Claude Code が COLUMNS 環境変数を
+    # 実行前に設定する（v2.1.153 以降）。未設定・不正値は 0（埋めない）に畳む。
+    terminal_columns = _parse_columns(os.environ.get("COLUMNS"))
+    # 左右マージン分を差し引いた実効幅で割り付ける。
+    columns = max(0, terminal_columns - STATUSLINE_MARGIN_COLUMNS) if terminal_columns > 0 else 0
+
+    return build_status_line(
+        model_name=model_name,
+        model_id=model_id,
+        context_fill_percent=context_fill_percent,
+        usage_5h_percent=usage_5h_percent,
+        repo_name=repo_name,
+        worktree_path=worktree_path,
+        branch=branch,
+        columns=columns,
+    )
+
+
+def _parse_columns(raw):
+    """COLUMNS 環境変数を非負整数へ変換する。不明・不正値は 0 を返す。"""
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return value if value > 0 else 0
+
+
+def main():
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # 入力が JSON でない場合は表示するものが無いため空行を出して終了する。
+        print("")
+        return
+    print(collect_status(data))
+
+
+if __name__ == "__main__":
+    main()

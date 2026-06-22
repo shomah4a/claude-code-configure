@@ -9,7 +9,6 @@ services:
       - USER_ID=${UID:-1000}
       - GROUP_ID=${GID:-1000}
       - CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
-      - CLAUDE_CODE_ENABLE_PROMT_SUGGSTION=0
 
     volumes:
       # 現在のディレクトリをワークスペースとしてマウント
@@ -28,6 +27,7 @@ services:
       - ../commands/cc-notification:/usr/bin/cc-notification:ro
       - ../commands/cc-stop:/usr/bin/cc-stop:ro
       - ../commands/cc-pre-tool:/usr/bin/cc-pre-tool:ro
+      - ../commands/cc-statusline:/usr/bin/cc-statusline:ro
     working_dir: ${PWD}
     stdin_open: true
     tty: true
