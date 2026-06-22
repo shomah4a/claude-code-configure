@@ -3,25 +3,33 @@
 Claude Code statusLine コマンド
 
 stdin で渡される statusLine JSON を読み取り、以下のテンプレートに従った
-1 行のステータス文字列を stdout へ出力する。
+2 行のステータス文字列を stdout へ出力する。
 
-  model: <model_id> context: <percent>% usage: <usage_5h>% (until <HH:MM>) git: <repo>@<branch> (<worktree_path>)
+  line 1 (claude code status):
+    model: <model_name> (<model_id>) context: <percent>% usage: <usage_5h>% (until <HH:MM>)
+  line 2 (environ):
+    repository: <repo_name> worktree: <worktree> branch: <branch> (<commit_hash>)
 
-usage セグメントの (until HH:MM) は 5 時間レート制限のリセット時刻（Asia/Tokyo 固定）。
-worktree_path はメイン作業ツリーのとき "main" を表示する。
-値が取得できない項目は省略せず "None" を表示する。
+各値の補足:
+- usage セグメントの (until HH:MM) は 5 時間レート制限のリセット時刻（Asia/Tokyo 固定）。
+- worktree はデフォルト（メイン）作業ツリーでは "(root)"、リンク worktree では
+  "<worktree_name> (<relpath>)"（worktree ルートの basename とメインリポジトリ
+  ルートからの相対パス）。
+- branch は現在ブランチ名、(commit_hash) は HEAD の short hash（detached 時は branch が None）。
+- 値が取得できない項目は省略せず "None" を表示する。
 
 JSON スキーマ: https://code.claude.com/docs/en/statusline.md
 
 設計方針:
 - 出力文字列の組み立ては純粋関数 build_status_line に集約し、
   副作用（stdin 読込・git subprocess）は main 側へ外部化する。
-- git 情報（ブランチ・worktree 相対パス）は JSON に常設フィールドが無いため
+- git 情報（ブランチ・コミット・worktree パス）は JSON に常設フィールドが無いため
   subprocess で取得する。現在ブランチを常に与える JSON フィールドは存在せず
   （worktree.branch は --worktree セッション限定で hook ベースでは absent）、
   取得元を git subprocess 一本に統一する。
 - 表示スタイル（背景色・文字色）は ANSI エスケープシーケンスで付与する。
   端末は印字文字にのみ背景色を乗せるため、行全体の横幅フルには塗らない。
+  複数行は行ごとに背景色を開始・RESET し、行間で背景が崩れないようにする。
 """
 
 import json
@@ -29,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 
 # git subprocess のハング防止のための上限。statusLine は描画ごとに実行されるため短く保つ。
@@ -42,8 +51,15 @@ JST = timezone(timedelta(hours=9))
 # 欠損を明示するために全項目で共通してこのラベルを表示する。
 NONE_LABEL = "None"
 
-# メイン作業ツリー（worktree 相対パスが空）のときの worktree 表示ラベル。
-MAIN_WORKTREE_LABEL = "main"
+# デフォルト（メイン）作業ツリーのときの worktree 表示ラベル。
+# 相対パスは "." になるが、視認性のため "(root)" と表示する。
+DEFAULT_WORKTREE_LABEL = "root"
+
+# git subprocess から得た環境情報。interface 境界では immutable な構造のみを渡す。
+GitInfo = namedtuple(
+    "GitInfo",
+    ["repo_name", "worktree_name", "worktree_relpath", "is_default_worktree", "branch", "commit_hash"],
+)
 
 # ANSI エスケープシーケンス（表示スタイル）
 RESET = "\033[0m"
@@ -69,8 +85,9 @@ _SGR_PATTERN = re.compile(r"\033\[[0-9;]*m")
 def visible_length(text):
     """SGR エスケープを除いた表示文字数を返す。
 
-    内容は ASCII（モデル名・id・リポジトリ名・ブランチ名）想定のため、
-    文字数 = 端末カラム数として扱う。
+    内容は ASCII（モデル名・id・リポジトリ名・ブランチ名・パス）想定のため、
+    文字数 = 端末カラム数として扱う。マルチバイトを含むパスでは幅がずれうるが、
+    両端揃えの間隔計算が崩れるだけで表示自体は壊れない。
     """
     return len(_SGR_PATTERN.sub("", text))
 
@@ -144,45 +161,48 @@ def distribute_segments(segments, columns):
     return "".join(pieces)
 
 
-def build_git_label(repo_name, branch, worktree_path):
-    """git 情報を repo@branch (worktree) 形式に整形する。
+def style_line(body):
+    """1 行の本文を背景色・基本文字色で囲み、行末で RESET する。
 
-    repo / branch は欠損時に NONE_LABEL を表示し、値欠損とバグを区別可能にする。
-    worktree_path はメイン作業ツリーで空になる正常状態のため、その場合は
-    MAIN_WORKTREE_LABEL を表示し、非空のときはその相対パスを括弧付きで付加する。
+    複数行では各行を個別に囲むことで、行間（改行）で背景色が引き継がれて
+    崩れるのを防ぐ。
     """
-    worktree_label = worktree_path or MAIN_WORKTREE_LABEL
-    base = f"{display_text(repo_name)}@{display_text(branch)} ({worktree_label})"
-    return f"git: {base}"
+    return f"{BG_LIGHT_GRAY}{FG_BASE}{body}{RESET}"
 
 
-def build_status_line(model_id, context_fill_percent, usage_5h_percent, usage_5h_resets_at, repo_name, worktree_path, branch, columns):
-    """ステータス行を組み立てる純粋関数。
+def build_status_line(model_name, model_id, context_fill_percent, usage_5h_percent, usage_5h_resets_at, git_info, columns):
+    """ステータス行（2 行）を組み立てる純粋関数。
 
     背景を明るい灰色、基本文字色を暗い灰色にし、context / usage 使用率を閾値で
     色分けする。各ラベルは "label: value" 形式（コロンの後にスペース）で揃える。
-    値が取得できない項目（モデル識別子、context / usage 使用率、リポジトリ名・ブランチ、
-    リセット時刻）は省略せず NONE_LABEL を表示し、値欠損とバグを区別可能にする。
+    1 行目は Claude Code のセッション状態、2 行目はリポジトリ環境を表す。
+    値が取得できない項目は省略せず NONE_LABEL を表示し、値欠損とバグを区別可能にする。
     usage セグメントには % の後にリセット時刻 "(until HH:MM)"（Asia/Tokyo）を付加する。
-    columns（端末カラム数）に余裕があるときはセグメント間を均等割り付けし、
+    各行は columns（端末カラム数）に余裕があるときセグメント間を均等割り付けし、
     背景を端末幅いっぱいに広げる（distribute_segments 参照）。
     """
-    model_part = f"model: {display_text(model_id)}"
+    status_segments = [
+        f"model: {display_text(model_name)} ({display_text(model_id)})",
+        # render_percent は色付け後に基本文字色(FG_BASE)へ戻す（背景は維持される）。
+        f"context: {render_percent(context_fill_percent)}",
+        f"usage: {render_percent(usage_5h_percent)} {format_reset_time(usage_5h_resets_at)}",
+    ]
+    if git_info.is_default_worktree:
+        worktree_segment = f"worktree: ({DEFAULT_WORKTREE_LABEL})"
+    else:
+        worktree_segment = f"worktree: {display_text(git_info.worktree_name)} ({display_text(git_info.worktree_relpath)})"
 
-    # render_percent は色付け後に基本文字色(FG_BASE)へ戻す（背景は維持される）。
-    context_part = f"context: {render_percent(context_fill_percent)}"
-
-    usage_part = f"usage: {render_percent(usage_5h_percent)} {format_reset_time(usage_5h_resets_at)}"
-
-    segments = [
-        model_part,
-        context_part,
-        usage_part,
-        build_git_label(repo_name, branch, worktree_path),
+    environ_segments = [
+        f"repository: {display_text(git_info.repo_name)}",
+        worktree_segment,
+        f"branch: {display_text(git_info.branch)} ({display_text(git_info.commit_hash)})",
     ]
 
-    body = distribute_segments(segments, columns)
-    return f"{BG_LIGHT_GRAY}{FG_BASE}{body}{RESET}"
+    lines = [
+        style_line(distribute_segments(status_segments, columns)),
+        style_line(distribute_segments(environ_segments, columns)),
+    ]
+    return "\n".join(lines)
 
 
 def _run_git(args, cwd):
@@ -206,27 +226,51 @@ def _run_git(args, cwd):
     return result.stdout.strip()
 
 
-def resolve_worktree_path(cwd):
-    """メインリポジトリルートからの現在 worktree ルートの相対パスを返す。
+def collect_git_info(cwd):
+    """cwd を起点に git 環境情報（GitInfo）を取得する。
 
-    メイン作業ツリーでは相対パスが "." になるため空文字を返す。
+    取得できない項目（git 不在・git 外・空リポジトリ・detached HEAD など）は
+    空文字のままとし、表示層で NONE_LABEL へ畳む。
+    - repo_name: メインリポジトリルートの basename
+    - worktree_name: 現在 worktree ルートの basename
+    - worktree_relpath: メインリポジトリルートからの相対パス（デフォルト作業ツリーは "."）
+    - is_default_worktree: 現在地がデフォルト（メイン）作業ツリーかどうか
+    - branch: 現在ブランチ名（detached HEAD では空）
+    - commit_hash: HEAD の short hash（空リポジトリでは空）
     """
     common_dir = _run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd)
     toplevel = _run_git(["rev-parse", "--show-toplevel"], cwd)
-    if not common_dir or not toplevel:
-        return ""
+    branch = _run_git(["branch", "--show-current"], cwd)
+    commit_hash = _run_git(["rev-parse", "--short", "HEAD"], cwd)
 
     # --git-common-dir はメインの .git を指すため、その親がメインリポジトリルート。
-    main_root = os.path.dirname(common_dir)
-    rel = os.path.relpath(toplevel, main_root)
-    if rel == ".":
-        return ""
-    return rel
+    main_root = os.path.dirname(common_dir) if common_dir else ""
+    repo_name = os.path.basename(main_root) if main_root else ""
+
+    if main_root and toplevel:
+        worktree_name = os.path.basename(toplevel)
+        worktree_relpath = os.path.relpath(toplevel, main_root)
+        # 相対パスが "." ならデフォルト（メイン）作業ツリー。
+        is_default_worktree = worktree_relpath == "."
+    else:
+        worktree_name = ""
+        worktree_relpath = ""
+        is_default_worktree = False
+
+    return GitInfo(
+        repo_name=repo_name,
+        worktree_name=worktree_name,
+        worktree_relpath=worktree_relpath,
+        is_default_worktree=is_default_worktree,
+        branch=branch,
+        commit_hash=commit_hash,
+    )
 
 
 def collect_status(data):
     """JSON データから純粋関数への入力を組み立てる（副作用を含む層）。"""
     model = data.get("model", {})
+    model_name = model.get("display_name", "")
     model_id = model.get("id", "")
 
     # null（セッション初期 / compact 直後）・キー不在は None とし、0% への畳み込みは
@@ -247,15 +291,9 @@ def collect_status(data):
     usage_5h_resets_at = five_hour.get("resets_at")
 
     workspace = data.get("workspace", {})
-    repo_name = workspace.get("repo", {}).get("name", "")
-
     # git subprocess の cwd は保証されないため、JSON から作業ディレクトリを明示注入する。
     cwd = workspace.get("current_dir") or data.get("cwd") or os.getcwd()
-
-    worktree_path = resolve_worktree_path(cwd)
-    # detached HEAD では --show-current が空になるため short commit hash へ
-    # フォールバックする（コミットが無い空リポジトリでは双方空のまま）。
-    branch = _run_git(["branch", "--show-current"], cwd) or _run_git(["rev-parse", "--short", "HEAD"], cwd)
+    git_info = collect_git_info(cwd)
 
     # 端末幅は stdout からは取得できず、Claude Code が COLUMNS 環境変数を
     # 実行前に設定する（v2.1.153 以降）。未設定・不正値は 0（埋めない）に畳む。
@@ -264,13 +302,12 @@ def collect_status(data):
     columns = max(0, terminal_columns - STATUSLINE_MARGIN_COLUMNS) if terminal_columns > 0 else 0
 
     return build_status_line(
+        model_name=model_name,
         model_id=model_id,
         context_fill_percent=context_fill_percent,
         usage_5h_percent=usage_5h_percent,
         usage_5h_resets_at=usage_5h_resets_at,
-        repo_name=repo_name,
-        worktree_path=worktree_path,
-        branch=branch,
+        git_info=git_info,
         columns=columns,
     )
 
