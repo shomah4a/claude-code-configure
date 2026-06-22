@@ -5,7 +5,11 @@ Claude Code statusLine コマンド
 stdin で渡される statusLine JSON を読み取り、以下のテンプレートに従った
 1 行のステータス文字列を stdout へ出力する。
 
-  mode: <model_name>(<model_id>) context: <percent>% usage: <usage_5h>% git: <repo>@<branch> (<worktree_path>)
+  model: <model_name>(<model_id>) context: <percent>% usage: <usage_5h>% (until <HH:MM>) git: <repo>@<branch> (<worktree_path>)
+
+usage セグメントの (until HH:MM) は 5 時間レート制限のリセット時刻（Asia/Tokyo 固定）。
+worktree_path はメイン作業ツリーのとき "main" を表示する。
+値が取得できない項目は省略せず "None" を表示する。
 
 JSON スキーマ: https://code.claude.com/docs/en/statusline.md
 
@@ -25,9 +29,21 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 
 # git subprocess のハング防止のための上限。statusLine は描画ごとに実行されるため短く保つ。
 GIT_TIMEOUT_SEC = 2
+
+# リセット時刻の表示タイムゾーン。日本標準時は夏時間が無いため固定オフセット +9 時間で
+# 正確に表現でき、tzdata（zoneinfo）の有無に依存しない。
+JST = timezone(timedelta(hours=9))
+
+# 値が取得できなかった項目の表示。省略すると値欠損とバグの区別が付かないため、
+# 欠損を明示するために全項目で共通してこのラベルを表示する。
+NONE_LABEL = "None"
+
+# メイン作業ツリー（worktree 相対パスが空）のときの worktree 表示ラベル。
+MAIN_WORKTREE_LABEL = "main"
 
 # ANSI エスケープシーケンス（表示スタイル）
 RESET = "\033[0m"
@@ -71,6 +87,34 @@ def percent_color(percent):
     return FG_RED
 
 
+def display_text(value):
+    """空・None の文字列値を NONE_LABEL へ畳む。値があればそのまま返す。"""
+    return value if value else NONE_LABEL
+
+
+def render_percent(percent):
+    """使用率を色付きの "<n>%" へ整形する。None（欠損）のときは NONE_LABEL を返す。"""
+    if percent is None:
+        return NONE_LABEL
+    return f"{percent_color(percent)}{percent}%{FG_BASE}"
+
+
+def format_reset_time(resets_at):
+    """レート制限リセット時刻（Unix epoch 秒）を Asia/Tokyo の "(until HH:MM)" へ整形する。
+
+    resets_at が None（リセット時刻不明）・非数値のときは "(until None)" を返す。
+    省略すると値欠損とバグの区別が付かないため、欠損を明示する。
+    """
+    if resets_at is None:
+        return "(until None)"
+    try:
+        epoch_sec = int(resets_at)
+    except (TypeError, ValueError):
+        return "(until None)"
+    reset_dt = datetime.fromtimestamp(epoch_sec, tz=JST)
+    return reset_dt.strftime("(until %H:%M)")
+
+
 def distribute_segments(segments, columns):
     """セグメント列を 1 行の本文へ連結する。
 
@@ -103,42 +147,39 @@ def distribute_segments(segments, columns):
 def build_git_label(repo_name, branch, worktree_path):
     """git 情報を repo@branch (worktree) 形式に整形する。
 
-    repo / branch のいずれかが欠けても二重区切りや余分な記号が残らないよう、
-    存在する要素のみを連結する。worktree_path は非空のときだけ括弧付きで付加する。
+    repo / branch は欠損時に NONE_LABEL を表示し、値欠損とバグを区別可能にする。
+    worktree_path はメイン作業ツリーで空になる正常状態のため、その場合は
+    MAIN_WORKTREE_LABEL を表示し、非空のときはその相対パスを括弧付きで付加する。
     """
-    if repo_name and branch:
-        base = f"{repo_name}@{branch}"
-    else:
-        # 片方のみ存在する場合は @ を付けずにそのまま表示する。
-        base = repo_name or branch
-
-    if worktree_path:
-        base = f"{base} ({worktree_path})" if base else f"({worktree_path})"
-
-    return "git:" + (f" {base}" if base else "")
+    worktree_label = worktree_path or MAIN_WORKTREE_LABEL
+    base = f"{display_text(repo_name)}@{display_text(branch)} ({worktree_label})"
+    return f"git: {base}"
 
 
-def build_status_line(model_name, model_id, context_fill_percent, usage_5h_percent, repo_name, worktree_path, branch, columns):
+def build_status_line(model_name, model_id, context_fill_percent, usage_5h_percent, usage_5h_resets_at, repo_name, worktree_path, branch, columns):
     """ステータス行を組み立てる純粋関数。
 
     背景を明るい灰色、基本文字色を暗い灰色にし、context / usage 使用率を閾値で
     色分けする。各ラベルは "label: value" 形式（コロンの後にスペース）で揃える。
-    usage_5h_percent が None（レート制限情報なし: 非対象プラン / 初回 API 応答前）の
-    ときは usage セグメントを省略する。
+    値が取得できない項目（モデル名・id、context / usage 使用率、リポジトリ名・ブランチ、
+    リセット時刻）は省略せず NONE_LABEL を表示し、値欠損とバグを区別可能にする。
+    usage セグメントには % の後にリセット時刻 "(until HH:MM)"（Asia/Tokyo）を付加する。
     columns（端末カラム数）に余裕があるときはセグメント間を均等割り付けし、
     背景を端末幅いっぱいに広げる（distribute_segments 参照）。
     """
-    mode_part = f"mode: {model_name}({model_id})"
+    model_part = f"model: {display_text(model_name)}({display_text(model_id)})"
 
-    # 色付け後は既定ではなく基本文字色(FG_BASE)へ戻す（背景は維持される）。
-    context_part = f"context: {percent_color(context_fill_percent)}{context_fill_percent}%{FG_BASE}"
+    # render_percent は色付け後に基本文字色(FG_BASE)へ戻す（背景は維持される）。
+    context_part = f"context: {render_percent(context_fill_percent)}"
 
-    segments = [mode_part, context_part]
+    usage_part = f"usage: {render_percent(usage_5h_percent)} {format_reset_time(usage_5h_resets_at)}"
 
-    if usage_5h_percent is not None:
-        segments.append(f"usage: {percent_color(usage_5h_percent)}{usage_5h_percent}%{FG_BASE}")
-
-    segments.append(build_git_label(repo_name, branch, worktree_path))
+    segments = [
+        model_part,
+        context_part,
+        usage_part,
+        build_git_label(repo_name, branch, worktree_path),
+    ]
 
     body = distribute_segments(segments, columns)
     return f"{BG_LIGHT_GRAY}{FG_BASE}{body}{RESET}"
@@ -189,17 +230,22 @@ def collect_status(data):
     model_name = model.get("display_name", "")
     model_id = model.get("id", "")
 
-    # null（セッション初期 / compact 直後）・キー不在の両方を 0 へ畳む。
+    # null（セッション初期 / compact 直後）・キー不在は None とし、0% への畳み込みは
+    # 行わない（「使用率 0」と値欠損が区別できなくなるため）。
     context_window = data.get("context_window", {}) or {}
-    context_fill_percent = int(context_window.get("used_percentage") or 0)
+    raw_context = context_window.get("used_percentage")
+    context_fill_percent = int(raw_context) if raw_context is not None else None
 
     # 5 時間レート制限の使用率。非対象プラン / 初回 API 応答前は欠損するため、
-    # null・キー不在は None として usage セグメントを省略する（0% への畳み込みは
-    # 「使用率 0」と誤読されるため行わない）。
+    # null・キー不在は None とする（usage セグメントでは NONE_LABEL を表示し、
+    # 0% への畳み込みは「使用率 0」と誤読されるため行わない）。
     rate_limits = data.get("rate_limits", {}) or {}
     five_hour = rate_limits.get("five_hour", {}) or {}
     raw_usage_5h = five_hour.get("used_percentage")
     usage_5h_percent = int(raw_usage_5h) if raw_usage_5h is not None else None
+
+    # リセット時刻（Unix epoch 秒）。欠損時は None とし "(until None)" を表示する。
+    usage_5h_resets_at = five_hour.get("resets_at")
 
     workspace = data.get("workspace", {})
     repo_name = workspace.get("repo", {}).get("name", "")
@@ -223,6 +269,7 @@ def collect_status(data):
         model_id=model_id,
         context_fill_percent=context_fill_percent,
         usage_5h_percent=usage_5h_percent,
+        usage_5h_resets_at=usage_5h_resets_at,
         repo_name=repo_name,
         worktree_path=worktree_path,
         branch=branch,
