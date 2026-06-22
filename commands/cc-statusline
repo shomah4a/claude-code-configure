@@ -208,7 +208,9 @@ def collect_status(data):
     cwd = workspace.get("current_dir") or data.get("cwd") or os.getcwd()
 
     worktree_path = resolve_worktree_path(cwd)
-    branch = _run_git(["branch", "--show-current"], cwd)
+    # detached HEAD では --show-current が空になるため short commit hash へ
+    # フォールバックする（コミットが無い空リポジトリでは双方空のまま）。
+    branch = _run_git(["branch", "--show-current"], cwd) or _run_git(["rev-parse", "--short", "HEAD"], cwd)
 
     # 端末幅は stdout からは取得できず、Claude Code が COLUMNS 環境変数を
     # 実行前に設定する（v2.1.153 以降）。未設定・不正値は 0（埋めない）に畳む。
