@@ -149,7 +149,7 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
             transport_type="http",
             auth=mcp_proxy.AuthBearer(token="my-token"),
         )
-        headers = mcp_proxy.build_upstream_headers(server, {})
+        headers = mcp_proxy.build_upstream_headers(server, {}, {})
 
         self.assertEqual(headers["Authorization"], "Bearer my-token")
         self.assertEqual(headers["Content-Type"], "application/json")
@@ -164,7 +164,7 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
                 "Account-Id": "12345",
             }),
         )
-        headers = mcp_proxy.build_upstream_headers(server, {})
+        headers = mcp_proxy.build_upstream_headers(server, {}, {})
 
         self.assertEqual(headers["Api-Key"], "NRAK-xxx")
         self.assertEqual(headers["Account-Id"], "12345")
@@ -178,7 +178,7 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
             auth=None,
         )
         client_headers = {"X-Request-Id": "req-001"}
-        headers = mcp_proxy.build_upstream_headers(server, client_headers)
+        headers = mcp_proxy.build_upstream_headers(server, client_headers, {})
 
         self.assertEqual(headers["X-Request-Id"], "req-001")
         self.assertEqual(headers["Content-Type"], "application/json")
@@ -191,7 +191,7 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
             auth=mcp_proxy.AuthHeader(headers={"Authorization": "from-yaml"}),
         )
         client_headers = {"Authorization": "from-client"}
-        headers = mcp_proxy.build_upstream_headers(server, client_headers)
+        headers = mcp_proxy.build_upstream_headers(server, client_headers, {})
 
         self.assertEqual(headers["Authorization"], "from-yaml")
 
@@ -202,11 +202,43 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
             transport_type="http",
             auth=None,
         )
-        headers = mcp_proxy.build_upstream_headers(server, {})
+        headers = mcp_proxy.build_upstream_headers(server, {}, {})
 
         self.assertEqual(
             headers,
             {"Content-Type": "application/json", "Accept": "application/json"},
+        )
+
+    def test_helperヘッダーがYAML認証ヘッダーより優先される(self):
+        server = mcp_proxy.UpstreamServer(
+            key="test",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            auth=mcp_proxy.AuthHeader(headers={"Authorization": "from-yaml"}),
+        )
+        helper_headers = {"Authorization": "from-helper"}
+        headers = mcp_proxy.build_upstream_headers(server, {}, helper_headers)
+
+        self.assertEqual(headers["Authorization"], "from-helper")
+
+    def test_helperヘッダーが空の場合は従来のヘッダー構成と同一になる(self):
+        server = mcp_proxy.UpstreamServer(
+            key="test",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            auth=mcp_proxy.AuthBearer(token="my-token"),
+        )
+        client_headers = {"X-Request-Id": "req-001"}
+        headers = mcp_proxy.build_upstream_headers(server, client_headers, {})
+
+        self.assertEqual(
+            headers,
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "X-Request-Id": "req-001",
+                "Authorization": "Bearer my-token",
+            },
         )
 
 
@@ -310,7 +342,7 @@ def _make_app(
         ),
     ]
     if forward_func is None:
-        forward_func = lambda server, body, timeout, headers: b'{"jsonrpc":"2.0","id":1,"result":{}}'
+        forward_func = lambda server, body, timeout, headers, helper_headers: b'{"jsonrpc":"2.0","id":1,"result":{}}'
     return mcp_proxy.McpProxyApp(servers, 30, forward_func=forward_func)
 
 
@@ -348,7 +380,7 @@ class WSGIハンドラテスト(unittest.TestCase):
     def test_正常なリクエストは上流のレスポンスをそのまま返す(self):
         upstream_response = b'{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}'
 
-        def fake_forward(server, body, timeout, headers):
+        def fake_forward(server, body, timeout, headers, helper_headers):
             return upstream_response
 
         app = _make_app(forward_func=fake_forward)
@@ -364,7 +396,7 @@ class WSGIハンドラテスト(unittest.TestCase):
     def test_転送関数にサーバー情報とリクエストボディが渡される(self):
         received = {}
 
-        def capturing_forward(server, body, timeout, headers):
+        def capturing_forward(server, body, timeout, headers, helper_headers):
             received["server_key"] = server.key
             received["body"] = body
             received["timeout"] = timeout
@@ -382,7 +414,7 @@ class WSGIハンドラテスト(unittest.TestCase):
         self.assertEqual(received["timeout"], 30)
 
     def test_上流HTTPError時は502とJSON_RPCエラーを返す(self):
-        def error_forward(server, body, timeout, headers):
+        def error_forward(server, body, timeout, headers, helper_headers):
             raise urllib.error.HTTPError(
                 url="https://test.example.com/mcp/",
                 code=500,
@@ -404,7 +436,7 @@ class WSGIハンドラテスト(unittest.TestCase):
         self.assertIn("500", error_json["error"]["message"])
 
     def test_上流URLError時は502とJSON_RPCエラーを返す(self):
-        def error_forward(server, body, timeout, headers):
+        def error_forward(server, body, timeout, headers, helper_headers):
             raise urllib.error.URLError(reason="Connection refused")
 
         app = _make_app(forward_func=error_forward)
@@ -552,7 +584,7 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
             ),
         ]
         if forward_func is None:
-            forward_func = lambda s, b, t: b'{"jsonrpc":"2.0","id":1,"result":{}}'
+            forward_func = lambda s, b, t, h, hh: b'{"jsonrpc":"2.0","id":1,"result":{}}'
         return mcp_proxy.McpProxyApp(servers, 30, forward_func=forward_func)
 
     def test_拒否されたツールのcallはエラーを返す(self):
@@ -576,7 +608,7 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
     def test_許可されたツールのcallは上流に転送される(self):
         forwarded = {"called": False}
 
-        def fake_forward(server, body, timeout, headers):
+        def fake_forward(server, body, timeout, headers, helper_headers):
             forwarded["called"] = True
             return b'{"jsonrpc":"2.0","id":1,"result":{"content":[]}}'
 
@@ -610,7 +642,7 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
 
         app = self._make_filtered_app(
             deny_tools=["delete_*"],
-            forward_func=lambda s, b, t, h: upstream_response,
+            forward_func=lambda s, b, t, h, hh: upstream_response,
         )
         request_body = json.dumps({
             "jsonrpc": "2.0",

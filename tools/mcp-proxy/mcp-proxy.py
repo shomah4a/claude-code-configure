@@ -193,6 +193,7 @@ def extract_client_headers(environ: Dict[str, Any]) -> Dict[str, str]:
 def build_upstream_headers(
     server: UpstreamServer,
     client_headers: Dict[str, str],
+    helper_headers: Dict[str, str],
 ) -> Dict[str, str]:
     """上流サーバーへのリクエストに付与するヘッダーを構築する
 
@@ -200,6 +201,7 @@ def build_upstream_headers(
     1. プロキシのデフォルト (Content-Type, Accept)
     2. クライアントからのパススルーヘッダー
     3. YAML認証ヘッダー
+    4. headers-helperによる動的ヘッダー
     """
     headers = {
         "Content-Type": "application/json",
@@ -213,6 +215,8 @@ def build_upstream_headers(
     elif isinstance(server.auth, AuthHeader):
         headers.update(server.auth.headers)
 
+    headers.update(helper_headers)
+
     return headers
 
 
@@ -221,9 +225,10 @@ def forward_request(
     request_body: bytes,
     timeout_sec: int,
     client_headers: Dict[str, str],
+    helper_headers: Dict[str, str],
 ) -> bytes:
     """リクエストを上流サーバーに転送し、レスポンスを返す"""
-    headers = build_upstream_headers(server, client_headers)
+    headers = build_upstream_headers(server, client_headers, helper_headers)
     req = urllib.request.Request(
         server.endpoint,
         data=request_body,
@@ -254,7 +259,9 @@ def generate_mcp_json(servers: List[UpstreamServer]) -> str:
     return json.dumps({"mcpServers": mcp_servers}, indent=2, ensure_ascii=False)
 
 
-ForwardFunc = Callable[[UpstreamServer, bytes, int, Dict[str, str]], bytes]
+ForwardFunc = Callable[
+    [UpstreamServer, bytes, int, Dict[str, str], Dict[str, str]], bytes
+]
 
 
 class McpProxyApp:
@@ -327,6 +334,7 @@ class McpProxyApp:
                 return [error_response.encode("utf-8")]
 
         client_headers = extract_client_headers(environ)
+        helper_headers: Dict[str, str] = {}
 
         print(
             f"[{server.key}] 転送: {server.endpoint}",
@@ -335,7 +343,11 @@ class McpProxyApp:
 
         try:
             response_body = self._forward(
-                server, request_body, self._timeout_sec, client_headers
+                server,
+                request_body,
+                self._timeout_sec,
+                client_headers,
+                helper_headers,
             )
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace")
