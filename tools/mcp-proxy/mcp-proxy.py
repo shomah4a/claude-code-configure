@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -389,6 +390,7 @@ def generate_mcp_json(servers: List[UpstreamServer]) -> str:
 ForwardFunc = Callable[
     [UpstreamServer, bytes, int, Dict[str, str], Dict[str, str]], bytes
 ]
+HelperHeadersFunc = Callable[[UpstreamServer], Dict[str, str]]
 
 
 class McpProxyApp:
@@ -399,10 +401,13 @@ class McpProxyApp:
         servers: List[UpstreamServer],
         timeout_sec: int,
         forward_func: ForwardFunc = forward_request,
+        *,
+        helper_headers_func: HelperHeadersFunc,
     ):
         self._servers = {s.key: s for s in servers}
         self._timeout_sec = timeout_sec
         self._forward = forward_func
+        self._helper_headers = helper_headers_func
 
     def __call__(
         self, environ: Dict[str, Any], start_response
@@ -461,7 +466,28 @@ class McpProxyApp:
                 return [error_response.encode("utf-8")]
 
         client_headers = extract_client_headers(environ)
-        helper_headers: Dict[str, str] = {}
+
+        try:
+            helper_headers = self._helper_headers(server)
+        except HeadersHelperError as e:
+            print(
+                f"[{server.key}] headers-helperエラー: {e}",
+                file=sys.stderr,
+            )
+            start_response(
+                "502 Bad Gateway", [("Content-Type", "application/json")]
+            )
+            error_response = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32603,
+                        "message": f"headers-helper実行エラー: {e}",
+                    },
+                }
+            )
+            return [error_response.encode("utf-8")]
 
         print(
             f"[{server.key}] 転送: {server.endpoint}",
@@ -556,7 +582,14 @@ def main() -> int:
         print(generate_mcp_json(servers))
         return 0
 
-    app = McpProxyApp(servers, TIMEOUT_SEC)
+    helper_cache = HeadersHelperCache(
+        runner=run_headers_helper,
+        ttl_sec=HEADERS_HELPER_CACHE_TTL_SEC,
+        now_func=time.monotonic,
+    )
+    app = McpProxyApp(
+        servers, TIMEOUT_SEC, helper_headers_func=helper_cache.get
+    )
 
     print(f"MCP Proxy Server", file=sys.stderr)
     print(f"Port: {PORT}", file=sys.stderr)

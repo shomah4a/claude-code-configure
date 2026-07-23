@@ -554,8 +554,14 @@ class _ResponseCapture:
         self.headers = headers
 
 
+def _no_helper_headers(server: mcp_proxy.UpstreamServer) -> Dict[str, str]:
+    """helperを使わないテスト用のダミー実装"""
+    return {}
+
+
 def _make_app(
     forward_func: Callable = None,
+    helper_headers_func: Callable = _no_helper_headers,
 ) -> mcp_proxy.McpProxyApp:
     """テスト用のMcpProxyAppを構築する"""
     servers = [
@@ -567,7 +573,12 @@ def _make_app(
     ]
     if forward_func is None:
         forward_func = lambda server, body, timeout, headers, helper_headers: b'{"jsonrpc":"2.0","id":1,"result":{}}'
-    return mcp_proxy.McpProxyApp(servers, 30, forward_func=forward_func)
+    return mcp_proxy.McpProxyApp(
+        servers,
+        30,
+        forward_func=forward_func,
+        helper_headers_func=helper_headers_func,
+    )
 
 
 class WSGIハンドラテスト(unittest.TestCase):
@@ -674,6 +685,77 @@ class WSGIハンドラテスト(unittest.TestCase):
         error_json = json.loads(body[0])
         self.assertEqual(error_json["error"]["code"], -32603)
         self.assertIn("Connection refused", error_json["error"]["message"])
+
+
+class WSGIハンドラヘルパー結線テスト(unittest.TestCase):
+
+    def _make_helper_app(
+        self,
+        helper_headers_func: Callable,
+        forward_func: Callable,
+    ) -> mcp_proxy.McpProxyApp:
+        servers = [
+            mcp_proxy.UpstreamServer(
+                key="test-server",
+                endpoint="https://test.example.com/mcp/",
+                transport_type="http",
+                headers_helper="/opt/bin/get-headers.sh",
+            ),
+        ]
+        return mcp_proxy.McpProxyApp(
+            servers,
+            30,
+            forward_func=forward_func,
+            helper_headers_func=helper_headers_func,
+        )
+
+    def test_helperヘッダーが転送関数に渡される(self):
+        received = {}
+
+        def capturing_forward(server, body, timeout, headers, helper_headers):
+            received["helper_headers"] = helper_headers
+            return b'{"jsonrpc":"2.0","id":1,"result":{}}'
+
+        app = self._make_helper_app(
+            helper_headers_func=lambda server: {"Authorization": "Bearer dyn"},
+            forward_func=capturing_forward,
+        )
+        request_body = b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+        environ = _build_environ(path="/test-server", body=request_body)
+        resp = _ResponseCapture()
+
+        app(environ, resp)
+
+        self.assertEqual(
+            received["helper_headers"], {"Authorization": "Bearer dyn"}
+        )
+
+    def test_helper失敗時は502とJSON_RPCエラーを返し転送しない(self):
+        forwarded = {"called": False}
+
+        def recording_forward(server, body, timeout, headers, helper_headers):
+            forwarded["called"] = True
+            return b'{"jsonrpc":"2.0","id":1,"result":{}}'
+
+        def failing_helper(server):
+            raise mcp_proxy.HeadersHelperError("helper broken")
+
+        app = self._make_helper_app(
+            helper_headers_func=failing_helper,
+            forward_func=recording_forward,
+        )
+        request_body = b'{"jsonrpc":"2.0","id":7,"method":"tools/list"}'
+        environ = _build_environ(path="/test-server", body=request_body)
+        resp = _ResponseCapture()
+
+        body = app(environ, resp)
+
+        self.assertEqual(resp.status, "502 Bad Gateway")
+        self.assertFalse(forwarded["called"])
+        error_json = json.loads(body[0])
+        self.assertEqual(error_json["id"], 7)
+        self.assertEqual(error_json["error"]["code"], -32603)
+        self.assertIn("helper broken", error_json["error"]["message"])
 
 
 class ツールフィルタリングテスト(unittest.TestCase):
@@ -809,7 +891,12 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
         ]
         if forward_func is None:
             forward_func = lambda s, b, t, h, hh: b'{"jsonrpc":"2.0","id":1,"result":{}}'
-        return mcp_proxy.McpProxyApp(servers, 30, forward_func=forward_func)
+        return mcp_proxy.McpProxyApp(
+            servers,
+            30,
+            forward_func=forward_func,
+            helper_headers_func=_no_helper_headers,
+        )
 
     def test_拒否されたツールのcallはエラーを返す(self):
         app = self._make_filtered_app(deny_tools=["delete_*"])
