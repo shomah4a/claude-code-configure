@@ -755,7 +755,27 @@ class WSGIハンドラヘルパー結線テスト(unittest.TestCase):
         error_json = json.loads(body[0])
         self.assertEqual(error_json["id"], 7)
         self.assertEqual(error_json["error"]["code"], -32603)
-        self.assertIn("helper broken", error_json["error"]["message"])
+        self.assertEqual(
+            error_json["error"]["message"], "headers-helper実行エラー"
+        )
+
+    def test_helper失敗時のエラー詳細はクライアントに返らない(self):
+        def failing_helper(server):
+            raise mcp_proxy.HeadersHelperError(
+                "headers-helperが失敗しました (exit 1): secret-token-in-stderr"
+            )
+
+        app = self._make_helper_app(
+            helper_headers_func=failing_helper,
+            forward_func=lambda s, b, t, h, hh: b'{"jsonrpc":"2.0","id":1,"result":{}}',
+        )
+        request_body = b'{"jsonrpc":"2.0","id":8,"method":"tools/list"}'
+        environ = _build_environ(path="/test-server", body=request_body)
+        resp = _ResponseCapture()
+
+        body = app(environ, resp)
+
+        self.assertNotIn(b"secret-token-in-stderr", body[0])
 
 
 class ツールフィルタリングテスト(unittest.TestCase):

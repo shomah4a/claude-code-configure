@@ -470,6 +470,8 @@ class McpProxyApp:
         try:
             helper_headers = self._helper_headers(server)
         except HeadersHelperError as e:
+            # 詳細 (stderrや出力断片) は秘匿情報を含み得るため
+            # サーバー側ログのみに出力し、クライアントには固定文言を返す
             print(
                 f"[{server.key}] headers-helperエラー: {e}",
                 file=sys.stderr,
@@ -483,7 +485,7 @@ class McpProxyApp:
                     "id": request_id,
                     "error": {
                         "code": -32603,
-                        "message": f"headers-helper実行エラー: {e}",
+                        "message": "headers-helper実行エラー",
                     },
                 }
             )
