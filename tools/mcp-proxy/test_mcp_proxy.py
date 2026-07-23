@@ -242,6 +242,60 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
         )
 
 
+class ヘルパー出力パーステスト(unittest.TestCase):
+
+    def test_文字列キーバリューのJSONオブジェクトをヘッダー辞書に変換できる(self):
+        output = '{"Authorization": "Bearer xxx", "Api-Key": "NRAK-yyy"}'
+        headers = mcp_proxy.parse_headers_helper_output(output)
+
+        self.assertEqual(
+            headers,
+            {"Authorization": "Bearer xxx", "Api-Key": "NRAK-yyy"},
+        )
+
+    def test_空のJSONオブジェクトは空辞書になる(self):
+        self.assertEqual(mcp_proxy.parse_headers_helper_output("{}"), {})
+
+    def test_JSONでない出力はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output("not-json")
+
+    def test_JSON配列の出力はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output('["a", "b"]')
+
+    def test_文字列でないヘッダー値はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output('{"Account-Id": 12345}')
+
+    def test_token文字以外を含むヘッダー名はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output('{"Bad Header": "v"}')
+
+    def test_改行を含むヘッダー値はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output(
+                '{"Authorization": "a\\r\\nX-Injected: b"}'
+            )
+
+
+class ヘルパーコマンド実行テスト(unittest.TestCase):
+
+    def test_JSONオブジェクトを出力するコマンドからヘッダーを取得できる(self):
+        command = """echo '{"Authorization": "Bearer from-helper"}'"""
+        headers = mcp_proxy.run_headers_helper(command, timeout_sec=5)
+
+        self.assertEqual(headers, {"Authorization": "Bearer from-helper"})
+
+    def test_非0で終了するコマンドはHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.run_headers_helper("echo ng >&2; exit 3", timeout_sec=5)
+
+    def test_タイムアウトを超えるコマンドはHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.run_headers_helper("sleep 5", timeout_sec=1)
+
+
 class パスルーティングテスト(unittest.TestCase):
 
     def _make_servers(self) -> Dict[str, mcp_proxy.UpstreamServer]:

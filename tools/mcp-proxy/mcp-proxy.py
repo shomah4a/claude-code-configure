@@ -12,6 +12,8 @@ import dataclasses
 import fnmatch
 import json
 import os
+import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -25,6 +27,11 @@ import yaml
 PORT = 38247
 TIMEOUT_SEC = 30
 DEFAULT_CONFIG_PATH = Path.home() / ".mcp-proxy.d" / "mcp-servers.yml"
+
+# Claude Codeのheaders helper仕様に合わせたタイムアウト
+# https://code.claude.com/docs/en/mcp.md
+HEADERS_HELPER_TIMEOUT_SEC = 10
+HEADERS_HELPER_CACHE_TTL_SEC = 300
 
 
 @dataclasses.dataclass(frozen=True)
@@ -188,6 +195,78 @@ def extract_client_headers(environ: Dict[str, Any]) -> Dict[str, str]:
     if "CONTENT_TYPE" in environ:
         headers["Content-Type"] = environ["CONTENT_TYPE"]
     return headers
+
+
+# RFC 7230のtoken文字。上流へのヘッダーインジェクションを防ぐため
+# helper出力のヘッダー名をこの文字集合に限定する
+_HEADER_NAME_TOKEN_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_HEADER_VALUE_FORBIDDEN_RE = re.compile(r"[\r\n\0]")
+
+
+class HeadersHelperError(Exception):
+    """headers-helperコマンドの実行または出力検証の失敗"""
+
+
+def parse_headers_helper_output(output: str) -> Dict[str, str]:
+    """headers-helperコマンドのstdoutを検証し、ヘッダー辞書に変換する
+
+    契約: 文字列key-valueのJSONオブジェクト。
+    ヘッダー名はRFC 7230 token文字のみ、値に制御文字を含む場合は拒否する。
+    """
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError as e:
+        raise HeadersHelperError(
+            f"headers-helperの出力がJSONではありません: {e}"
+        ) from e
+
+    if not isinstance(data, dict):
+        raise HeadersHelperError(
+            "headers-helperの出力はJSONオブジェクトである必要があります"
+        )
+
+    headers = {}
+    for name, value in data.items():
+        if not isinstance(value, str):
+            raise HeadersHelperError(
+                f"ヘッダー値が文字列ではありません: {name}"
+            )
+        if not _HEADER_NAME_TOKEN_RE.match(name):
+            raise HeadersHelperError(f"不正なヘッダー名です: {name!r}")
+        if _HEADER_VALUE_FORBIDDEN_RE.search(value):
+            raise HeadersHelperError(
+                f"ヘッダー値に制御文字が含まれています: {name}"
+            )
+        headers[name] = value
+    return headers
+
+
+def run_headers_helper(command: str, timeout_sec: int) -> Dict[str, str]:
+    """headers-helperコマンドをシェルで実行し、動的ヘッダーの辞書を返す
+
+    コマンド文字列は設定ファイル由来の静的な値のみを渡すこと。
+    リクエスト由来のデータを補間してはならない (シェルインジェクション防止)。
+    """
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise HeadersHelperError(
+            f"headers-helperがタイムアウトしました ({timeout_sec}秒)"
+        ) from e
+
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise HeadersHelperError(
+            f"headers-helperが失敗しました (exit {result.returncode}): {stderr}"
+        )
+
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    return parse_headers_helper_output(stdout)
 
 
 def build_upstream_headers(
