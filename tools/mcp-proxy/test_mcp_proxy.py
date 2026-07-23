@@ -346,6 +346,126 @@ class ヘルパーコマンド実行テスト(unittest.TestCase):
             mcp_proxy.run_headers_helper("sleep 5", timeout_sec=1)
 
 
+class ヘルパーキャッシュテスト(unittest.TestCase):
+
+    def _server_with_helper(self, key: str = "cached") -> mcp_proxy.UpstreamServer:
+        return mcp_proxy.UpstreamServer(
+            key=key,
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            headers_helper="/opt/bin/get-headers.sh",
+        )
+
+    def _make_cache(
+        self,
+        run_results: List[Dict[str, str]],
+        clock: List[float],
+        ttl_sec: float = 300.0,
+    ) -> "Tuple[mcp_proxy.HeadersHelperCache, List[str]]":
+        """fakeのrunnerとclockを注入したキャッシュを構築する
+
+        run_results: runner呼び出しごとに順に返す結果
+        clock: 現在時刻を保持する1要素リスト (テスト側で書き換えて時間を進める)
+        """
+        calls: List[str] = []
+
+        def fake_runner(command: str, timeout_sec: int) -> Dict[str, str]:
+            calls.append(command)
+            return run_results[len(calls) - 1]
+
+        cache = mcp_proxy.HeadersHelperCache(
+            runner=fake_runner,
+            ttl_sec=ttl_sec,
+            now_func=lambda: clock[0],
+        )
+        return cache, calls
+
+    def test_helper未設定のサーバーはrunnerを実行せず空辞書を返す(self):
+        server = mcp_proxy.UpstreamServer(
+            key="plain",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+        )
+        cache, calls = self._make_cache([], clock=[0.0])
+
+        self.assertEqual(cache.get(server), {})
+        self.assertEqual(calls, [])
+
+    def test_初回取得時にrunnerが実行される(self):
+        clock = [0.0]
+        cache, calls = self._make_cache(
+            [{"Authorization": "Bearer t1"}], clock
+        )
+
+        headers = cache.get(self._server_with_helper())
+
+        self.assertEqual(headers, {"Authorization": "Bearer t1"})
+        self.assertEqual(calls, ["/opt/bin/get-headers.sh"])
+
+    def test_TTL内の再取得ではrunnerが再実行されない(self):
+        clock = [0.0]
+        cache, calls = self._make_cache(
+            [{"Authorization": "Bearer t1"}], clock, ttl_sec=300.0
+        )
+        server = self._server_with_helper()
+
+        cache.get(server)
+        clock[0] = 299.0
+        headers = cache.get(server)
+
+        self.assertEqual(headers, {"Authorization": "Bearer t1"})
+        self.assertEqual(len(calls), 1)
+
+    def test_TTL経過後の取得ではrunnerが再実行される(self):
+        clock = [0.0]
+        cache, calls = self._make_cache(
+            [{"Authorization": "Bearer t1"}, {"Authorization": "Bearer t2"}],
+            clock,
+            ttl_sec=300.0,
+        )
+        server = self._server_with_helper()
+
+        cache.get(server)
+        clock[0] = 300.0
+        headers = cache.get(server)
+
+        self.assertEqual(headers, {"Authorization": "Bearer t2"})
+        self.assertEqual(len(calls), 2)
+
+    def test_サーバーごとに独立してキャッシュされる(self):
+        clock = [0.0]
+        cache, calls = self._make_cache(
+            [{"A": "1"}, {"B": "2"}], clock
+        )
+
+        headers1 = cache.get(self._server_with_helper(key="server1"))
+        headers2 = cache.get(self._server_with_helper(key="server2"))
+
+        self.assertEqual(headers1, {"A": "1"})
+        self.assertEqual(headers2, {"B": "2"})
+        self.assertEqual(len(calls), 2)
+
+    def test_runnerの例外はキャッシュされず呼び出し元に伝播する(self):
+        calls: List[str] = []
+
+        def failing_runner(command: str, timeout_sec: int) -> Dict[str, str]:
+            calls.append(command)
+            raise mcp_proxy.HeadersHelperError("failed")
+
+        cache = mcp_proxy.HeadersHelperCache(
+            runner=failing_runner,
+            ttl_sec=300.0,
+            now_func=lambda: 0.0,
+        )
+        server = self._server_with_helper()
+
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            cache.get(server)
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            cache.get(server)
+        self.assertEqual(len(calls), 2)
+
+
 class パスルーティングテスト(unittest.TestCase):
 
     def _make_servers(self) -> Dict[str, mcp_proxy.UpstreamServer]:

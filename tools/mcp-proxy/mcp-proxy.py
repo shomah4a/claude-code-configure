@@ -18,7 +18,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from wsgiref.simple_server import make_server
 
 import yaml
@@ -277,6 +277,44 @@ def run_headers_helper(command: str, timeout_sec: int) -> Dict[str, str]:
 
     stdout = result.stdout.decode("utf-8", errors="replace")
     return parse_headers_helper_output(stdout)
+
+
+HelperRunner = Callable[[str, int], Dict[str, str]]
+
+
+class HeadersHelperCache:
+    """headers-helperの実行結果をサーバー単位でTTLキャッシュする
+
+    副作用の外部化のため、helper実行関数と現在時刻取得関数
+    (monotonic clock想定、秒単位) はコンストラクタで注入する。
+    """
+
+    def __init__(
+        self,
+        runner: HelperRunner,
+        ttl_sec: float,
+        now_func: Callable[[], float],
+    ):
+        self._runner = runner
+        self._ttl_sec = ttl_sec
+        self._now = now_func
+        self._entries: Dict[str, Tuple[float, Dict[str, str]]] = {}
+
+    def get(self, server: UpstreamServer) -> Dict[str, str]:
+        """サーバーの動的ヘッダーを返す。TTL内はキャッシュを利用する"""
+        if server.headers_helper is None:
+            return {}
+
+        now = self._now()
+        entry = self._entries.get(server.key)
+        if entry is not None and now < entry[0]:
+            return entry[1]
+
+        headers = self._runner(
+            server.headers_helper, HEADERS_HELPER_TIMEOUT_SEC
+        )
+        self._entries[server.key] = (now + self._ttl_sec, headers)
+        return headers
 
 
 def build_upstream_headers(
