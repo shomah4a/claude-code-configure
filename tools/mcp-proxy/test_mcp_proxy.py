@@ -119,6 +119,56 @@ class 設定ファイル読み込みテスト(unittest.TestCase):
             self.assertEqual(len(servers), 1)
             self.assertEqual(servers[0].key, "http-server")
 
+    def test_headers_helper付きの設定を読み込める(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_yaml(Path(tmp), """\
+                mcp-servers:
+                  dynamic:
+                    endpoint: https://dynamic.example.com/mcp/
+                    type: http
+                    headers-helper: /opt/bin/get-headers.sh
+            """)
+            servers = mcp_proxy.load_config(config_path)
+
+            self.assertEqual(len(servers), 1)
+            self.assertEqual(
+                servers[0].headers_helper, "/opt/bin/get-headers.sh"
+            )
+
+    def test_headers_helper未指定の場合はNoneになる(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_yaml(Path(tmp), """\
+                mcp-servers:
+                  plain:
+                    endpoint: https://plain.example.com/mcp/
+                    type: http
+            """)
+            servers = mcp_proxy.load_config(config_path)
+
+            self.assertIsNone(servers[0].headers_helper)
+
+    def test_headers_helperが文字列でないサーバーはスキップされる(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_yaml(Path(tmp), """\
+                mcp-servers:
+                  broken:
+                    endpoint: https://broken.example.com/mcp/
+                    type: http
+                    headers-helper:
+                      - not
+                      - a-string
+                  valid:
+                    endpoint: https://valid.example.com/mcp/
+                    type: http
+            """)
+            servers = mcp_proxy.load_config(config_path)
+
+            self.assertEqual(len(servers), 1)
+            self.assertEqual(servers[0].key, "valid")
+
     def test_存在しない設定ファイルは空リストを返す(self):
         servers = mcp_proxy.load_config(Path("/nonexistent/config.yaml"))
         self.assertEqual(servers, [])

@@ -52,6 +52,7 @@ class UpstreamServer:
     auth: Optional[Union[AuthBearer, AuthHeader]] = None
     allow_tools: List[str] = dataclasses.field(default_factory=list)
     deny_tools: List[str] = dataclasses.field(default_factory=list)
+    headers_helper: Optional[str] = None
 
 
 def parse_auth(auth_config: Optional[Dict[str, Any]]) -> Optional[Union[AuthBearer, AuthHeader]]:
@@ -110,6 +111,14 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
             )
             continue
 
+        headers_helper = conf.get("headers-helper")
+        if headers_helper is not None and not isinstance(headers_helper, str):
+            print(
+                f"サーバー '{key}' のheaders-helperは文字列である必要があります。スキップします",
+                file=sys.stderr,
+            )
+            continue
+
         auth = parse_auth(conf.get("auth"))
         allow_tools = conf.get("allow-tools", [])
         deny_tools = conf.get("deny-tools", [])
@@ -121,6 +130,7 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
                 auth=auth,
                 allow_tools=allow_tools,
                 deny_tools=deny_tools,
+                headers_helper=headers_helper,
             )
         )
 
