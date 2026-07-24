@@ -337,5 +337,63 @@ class GhPrCreateSchemaValidationTest(unittest.TestCase):
             gh_proxy.validate_arguments("gh_pr_create", arguments)
 
 
+class BuildGitMergeDefaultBranchArgsTest(unittest.TestCase):
+    """git_merge_default_branch の引数組み立てのテスト"""
+
+    def test_パスから全リモートfetchの引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_fetch_all_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "fetch", "--all"],
+        )
+
+    def test_パスとデフォルトブランチからorigin追跡refをno_editでマージする引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_merge_args("/home/user/repo", "main"),
+            ["-C", "/home/user/repo", "merge", "origin/main", "--no-edit"],
+        )
+
+    def test_パスからマージ巻き戻しの引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_merge_abort_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "merge", "--abort"],
+        )
+
+
+class IsMergeConflictTest(unittest.TestCase):
+    """merge 実行結果のコンフリクト判定のテスト"""
+
+    def test_終了コード0はコンフリクトと判定しない(self):
+        self.assertFalse(gh_proxy.is_merge_conflict(0, "Merge made by the 'ort' strategy."))
+
+    def test_終了コード非0でstdoutにCONFLICTがあるとコンフリクトと判定する(self):
+        stdout = "CONFLICT (content): Merge conflict in main.py\n"
+        self.assertTrue(gh_proxy.is_merge_conflict(1, stdout))
+
+    def test_終了コード非0でstdoutにAutomatic_merge_failedがあるとコンフリクトと判定する(self):
+        stdout = "Automatic merge failed; fix conflicts and then commit the result.\n"
+        self.assertTrue(gh_proxy.is_merge_conflict(1, stdout))
+
+    def test_終了コード非0でもコンフリクト表示がなければコンフリクトと判定しない(self):
+        self.assertFalse(gh_proxy.is_merge_conflict(128, ""))
+
+
+class GitMergeDefaultBranchSchemaValidationTest(unittest.TestCase):
+    """git_merge_default_branch のスキーマレベルの引数検証のテスト"""
+
+    def test_pathがあれば例外にならない(self):
+        gh_proxy.validate_arguments("git_merge_default_branch", {"path": "/home/user/repo"})
+
+    def test_pathが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("git_merge_default_branch", {})
+
+    def test_branchフィールドを渡すとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "git_merge_default_branch",
+                {"path": "/home/user/repo", "branch": "main"},
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
