@@ -26,10 +26,10 @@ RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-li
     | tar -xJ -C /usr/local --strip-components=1
 
 # Claude Codeをグローバルインストール
-RUN npm install -g @anthropic-ai/claude-code@2.1.197
+RUN npm install -g @anthropic-ai/claude-code@2.1.206
 
 # Codex をグローバルインストール
-RUN npm install -g @openai/codex@0.130.0
+RUN npm install -g @openai/codex@0.144.1
 
 # 作業ディレクトリを設定
 WORKDIR /app
