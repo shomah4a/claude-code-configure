@@ -23,7 +23,7 @@ PORT = int(os.environ.get('GH_PROXY_PORT', '30721'))
 TIMEOUT = int(os.environ.get('GH_PROXY_TIMEOUT', '30'))
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
@@ -284,6 +284,20 @@ TOOLS = [
                 }
             },
             "required": ["path", "branch"]
+        }
+    },
+    {
+        "name": "git_merge_default_branch",
+        "description": "クローン済みリポジトリで git fetch --all を実行し、origin のデフォルトブランチを現在のブランチへマージします。コンフリクト時は merge --abort で巻き戻します",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "クローン済みリポジトリルートの絶対パス"
+                }
+            },
+            "required": ["path"]
         }
     }
 ]
@@ -627,19 +641,19 @@ def resolve_local_repo_default_branch(path: str) -> str:
     """
     path のリポジトリのデフォルトブランチ名を gh で取得する
 
-    デフォルトブランチへの push を確実に防ぐため、判定できない場合は
-    例外を送出して push を拒否する (fail-closed)。
+    デフォルトブランチに依存する判定を確実に行うため、判定できない場合は
+    例外を送出して呼び出し元の処理を中断する (fail-closed)。
     """
     stdout, stderr, code = execute_gh_command(build_gh_local_default_branch_args(), cwd=path)
 
     if code != 0:
         raise ToolExecutionError(
-            f"デフォルトブランチの取得に失敗したため push を拒否しました: {stderr}"
+            f"デフォルトブランチの取得に失敗したため処理を中断しました: {stderr}"
         )
 
     default_branch = stdout.strip()
     if not default_branch:
-        raise ToolExecutionError("デフォルトブランチを解決できなかったため push を拒否しました")
+        raise ToolExecutionError("デフォルトブランチを解決できなかったため処理を中断しました")
 
     return default_branch
 
@@ -659,6 +673,92 @@ def execute_git_push(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
         raise ToolExecutionError(f"git push failed: {stderr}")
 
     # git push は進捗や結果を stderr に出力するため、stdout が空の場合は stderr を返す
+    output = stdout if stdout.strip() else stderr
+    return [{"type": "text", "text": output}]
+
+
+def build_git_fetch_all_args(path: str) -> List[str]:
+    """git_merge_default_branch の fetch フェーズの git コマンド引数を組み立てる"""
+    return ["-C", path, "fetch", "--all"]
+
+
+def build_git_merge_args(path: str, default_branch: str) -> List[str]:
+    """git_merge_default_branch の merge フェーズの git コマンド引数を組み立てる"""
+    return ["-C", path, "merge", f"origin/{default_branch}", "--no-edit"]
+
+
+def build_git_merge_abort_args(path: str) -> List[str]:
+    """コンフリクト時に merge を巻き戻す git コマンド引数を組み立てる"""
+    return ["-C", path, "merge", "--abort"]
+
+
+def build_git_merge_head_check_args(path: str) -> List[str]:
+    """マージ途中状態 (MERGE_HEAD の存在) を確認する git コマンド引数を組み立てる"""
+    return ["-C", path, "rev-parse", "-q", "--verify", "MERGE_HEAD"]
+
+
+def is_merge_in_progress(path: str) -> bool:
+    """
+    path のリポジトリがマージ途中状態かを MERGE_HEAD の存在で判定する
+
+    git のエラーメッセージはロケールにより翻訳されるため、
+    文字列一致ではなく MERGE_HEAD の有無で判定する。
+    """
+    stdout, stderr, code = execute_git_command(build_git_merge_head_check_args(path))
+    return code == 0
+
+
+def ensure_no_merge_in_progress(path: str) -> None:
+    """
+    リポジトリがマージ途中状態でないことを検証する
+
+    ツール外で開始された既存のマージを merge --abort で破棄してしまわないよう、
+    既にマージ途中の場合は実行前に fail-closed で中断する。
+    """
+    if is_merge_in_progress(path):
+        raise ToolExecutionError(
+            "リポジトリが既にマージ途中状態のため実行を中断しました。"
+            "コンフリクトを解決するか git merge --abort を実行してください"
+        )
+
+
+def abort_conflicted_merge(path: str) -> None:
+    """コンフリクトした merge を --abort で巻き戻す"""
+    stdout, stderr, code = execute_git_command(build_git_merge_abort_args(path))
+
+    if code != 0:
+        raise ToolExecutionError(
+            f"マージがコンフリクトし、merge --abort にも失敗しました。"
+            f"リポジトリがマージ途中状態のまま残っています: {stderr}"
+        )
+
+
+def execute_git_merge_default_branch(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """git_merge_default_branch ツールの実行"""
+    path = arguments["path"]
+
+    validate_repository_path(path)
+    ensure_no_merge_in_progress(path)
+
+    default_branch = resolve_local_repo_default_branch(path)
+    validate_branch_name(default_branch, "default_branch")
+
+    stdout, stderr, code = execute_git_command(build_git_fetch_all_args(path))
+    if code != 0:
+        raise ToolExecutionError(f"git fetch failed: {stderr}")
+
+    stdout, stderr, code = execute_git_command(build_git_merge_args(path, default_branch))
+
+    if code != 0 and is_merge_in_progress(path):
+        abort_conflicted_merge(path)
+        raise ToolExecutionError(
+            f"マージがコンフリクトしたため merge --abort で巻き戻しました: {stdout}{stderr}"
+        )
+
+    if code != 0:
+        raise ToolExecutionError(f"git merge failed: {stdout}{stderr}")
+
+    # 既に最新の場合など、git merge が結果を stderr のみに出力するケースに備える
     output = stdout if stdout.strip() else stderr
     return [{"type": "text", "text": output}]
 
@@ -690,6 +790,9 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, An
     """
     if tool_name == "git_push":
         return execute_git_push(arguments)
+
+    if tool_name == "git_merge_default_branch":
+        return execute_git_merge_default_branch(arguments)
 
     executor = REPO_TOOL_EXECUTORS.get(tool_name)
     if executor is None:

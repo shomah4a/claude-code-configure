@@ -337,5 +337,113 @@ class GhPrCreateSchemaValidationTest(unittest.TestCase):
             gh_proxy.validate_arguments("gh_pr_create", arguments)
 
 
+class BuildGitMergeDefaultBranchArgsTest(unittest.TestCase):
+    """git_merge_default_branch の引数組み立てのテスト"""
+
+    def test_パスから全リモートfetchの引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_fetch_all_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "fetch", "--all"],
+        )
+
+    def test_パスとデフォルトブランチからorigin追跡refをno_editでマージする引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_merge_args("/home/user/repo", "main"),
+            ["-C", "/home/user/repo", "merge", "origin/main", "--no-edit"],
+        )
+
+    def test_パスからマージ巻き戻しの引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_merge_abort_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "merge", "--abort"],
+        )
+
+    def test_パスからMERGE_HEAD存在確認の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_merge_head_check_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        )
+
+
+class MergeInProgressDetectionTest(unittest.TestCase):
+    """実 git リポジトリでのマージ途中状態判定と巻き戻しのテスト"""
+
+    def _run_git(self, *args):
+        stdout, stderr, code = gh_proxy.execute_git_command(list(args))
+        self.assertEqual(code, 0, stderr)
+
+    def _write_file(self, repo_dir, content):
+        with open(os.path.join(repo_dir, "data.txt"), "w") as f:
+            f.write(content)
+
+    def _create_repo_with_conflicting_branch(self, repo_dir):
+        """main と topic で同一ファイルを別内容に変更したリポジトリを作る"""
+        self._run_git("-C", repo_dir, "init", "-q", "-b", "main")
+        self._run_git("-C", repo_dir, "config", "user.email", "test@example.com")
+        self._run_git("-C", repo_dir, "config", "user.name", "test")
+        self._write_file(repo_dir, "base\n")
+        self._run_git("-C", repo_dir, "add", "data.txt")
+        self._run_git("-C", repo_dir, "commit", "-q", "-m", "base")
+        self._run_git("-C", repo_dir, "checkout", "-q", "-b", "topic")
+        self._write_file(repo_dir, "topic\n")
+        self._run_git("-C", repo_dir, "commit", "-q", "-am", "topic")
+        self._run_git("-C", repo_dir, "checkout", "-q", "main")
+        self._write_file(repo_dir, "main\n")
+        self._run_git("-C", repo_dir, "commit", "-q", "-am", "main")
+
+    def _merge_topic_expecting_conflict(self, repo_dir):
+        stdout, stderr, code = gh_proxy.execute_git_command(
+            ["-C", repo_dir, "merge", "topic", "--no-edit"])
+        self.assertNotEqual(code, 0)
+
+    def test_マージしていないリポジトリはマージ途中状態と判定しない(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            self.assertFalse(gh_proxy.is_merge_in_progress(repo_dir))
+
+    def test_コンフリクトしたマージの後はマージ途中状態と判定する(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            self._merge_topic_expecting_conflict(repo_dir)
+            self.assertTrue(gh_proxy.is_merge_in_progress(repo_dir))
+
+    def test_コンフリクトしたマージを巻き戻すとマージ途中状態でなくなる(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            self._merge_topic_expecting_conflict(repo_dir)
+            gh_proxy.abort_conflicted_merge(repo_dir)
+            self.assertFalse(gh_proxy.is_merge_in_progress(repo_dir))
+
+    def test_マージしていないリポジトリのマージ途中状態検証は例外にならない(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            gh_proxy.ensure_no_merge_in_progress(repo_dir)
+
+    def test_マージ途中状態のリポジトリの検証はToolExecutionErrorになる(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            self._merge_topic_expecting_conflict(repo_dir)
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                gh_proxy.ensure_no_merge_in_progress(repo_dir)
+
+
+class GitMergeDefaultBranchSchemaValidationTest(unittest.TestCase):
+    """git_merge_default_branch のスキーマレベルの引数検証のテスト"""
+
+    def test_pathがあれば例外にならない(self):
+        gh_proxy.validate_arguments("git_merge_default_branch", {"path": "/home/user/repo"})
+
+    def test_pathが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("git_merge_default_branch", {})
+
+    def test_branchフィールドを渡すとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "git_merge_default_branch",
+                {"path": "/home/user/repo", "branch": "main"},
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

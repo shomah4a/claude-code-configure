@@ -5,7 +5,7 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 ## 概要
 
 このサーバーは、Claude CodeなどのMCPクライアントに対して、GitHubのreadonly操作と、
-一部の書き込み操作（git push、Pull Request作成）を提供します。
+一部の書き込み操作（git push、Pull Request作成、デフォルトブランチのマージ）を提供します。
 ホスト側でサーバーを起動し、Dockerコンテナで動作するClaude Codeから HTTP経由でアクセスすることで、
 認証情報を渡すことなくGitHubを操作できます。
 
@@ -13,7 +13,7 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 
 - Python 3.8 以上（標準ライブラリのみ使用）
 - GitHub CLI (gh) 2.0.0 以上
-- git（git_push を利用する場合）
+- git（git_push / git_merge_default_branch を利用する場合）
 - GitHub認証済みの環境（`gh auth status` で確認可能）
 
 ## セットアップ
@@ -284,6 +284,39 @@ push 先ブランチがデフォルトブランチと一致する場合、push �
 }
 ```
 
+### 10. git_merge_default_branch
+
+クローン済みリポジトリで `git fetch --all` を実行し、origin のデフォルトブランチを現在チェックアウトされているブランチへ `--no-edit` でマージします。
+
+**引数:**
+- `path` (必須): クローン済みリポジトリルートの絶対パス（サーバーが動作するホスト側ファイルシステム上のパス）
+
+デフォルトブランチは git_push と同様に、対象リポジトリを作業ディレクトリとして `gh repo view` で判定します。
+判定できない場合はマージを実行しません（fail-closed）。このため利用には gh と GitHub 認証が必要です。
+
+マージがコンフリクトで失敗した場合は `git merge --abort` で自動的に巻き戻し、
+コンフリクト内容を含むエラーを返します。abort にも失敗した場合はリポジトリがマージ途中状態のまま残ります。
+
+リポジトリが既にマージ途中状態（MERGE_HEAD が存在）の場合は、ツール外で開始された
+マージを破棄しないよう、何も実行せずエラーを返します（fail-closed）。
+
+**注意事項:**
+- マージ前に作業ツリーが clean であるかの検証は行いません。未コミット変更がある状態で実行すると
+  マージ結果と未コミット変更が混在し、コンフリクト時の abort による復元が不完全になる可能性があります
+- fetch または merge がタイムアウト（デフォルト30秒）で中断された場合、リポジトリが中間状態
+  （MERGE_HEAD 残留等）になる可能性があります。大きいリポジトリでは `GH_PROXY_TIMEOUT` の延長を検討してください
+- detached HEAD 状態での実行は検証していません
+
+**例:**
+```json
+{
+  "name": "git_merge_default_branch",
+  "arguments": {
+    "path": "/home/user/work/my-repo"
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -297,9 +330,11 @@ push 先ブランチがデフォルトブランチと一致する場合、push �
 - ブランチのpush（git_push）: remote は origin 固定。force push・ブランチ削除・オプション指定は不可。
   デフォルトブランチへの push は拒否（デフォルトブランチを判定できない場合も拒否）
 - Pull Request作成（gh_pr_create）
+- デフォルトブランチのマージ（git_merge_default_branch）: ローカルリポジトリの作業ツリー・
+  インデックス・HEAD を書き換える操作です
 
-git_push の `path` には「絶対パス・ディレクトリ存在・.git 存在」以外の制限を設けていません。
-サーバープロセスから到達可能な任意の git リポジトリを push 対象に指定できるため、
+git_push / git_merge_default_branch の `path` には「絶対パス・ディレクトリ存在・.git 存在」以外の制限を設けていません。
+サーバープロセスから到達可能な任意の git リポジトリを操作対象に指定できるため、
 信頼できないクライアントからアクセス可能な環境で運用する場合はこの点を考慮してください。
 
 ### 2. 引数バリデーション
