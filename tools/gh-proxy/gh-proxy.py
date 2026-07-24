@@ -228,6 +228,45 @@ TOOLS = [
         }
     },
     {
+        "name": "gh_pr_create",
+        "description": "指定されたリポジトリにPull Requestを作成します",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "リポジトリのオーナー名",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                },
+                "repository_name": {
+                    "type": "string",
+                    "description": "リポジトリ名",
+                    "pattern": "^[a-zA-Z0-9._-]+$"
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "head となるブランチ名",
+                    "pattern": BRANCH_NAME_PATTERN
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Pull Request のタイトル",
+                    "minLength": 1
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Pull Request の本文"
+                },
+                "base": {
+                    "type": "string",
+                    "description": "base となるブランチ名。省略時はリポジトリのデフォルトブランチを使用",
+                    "pattern": BRANCH_NAME_PATTERN
+                }
+            },
+            "required": ["owner", "repository_name", "branch", "title", "body"]
+        }
+    },
+    {
         "name": "git_push",
         "description": "クローン済みリポジトリのブランチを origin へ push します",
         "inputSchema": {
@@ -276,6 +315,14 @@ def validate_integer_range(value: int, minimum: Optional[int], maximum: Optional
     if maximum is not None and value > maximum:
         raise ValidationError(
             f"{field_name} は {maximum} 以下である必要があります: {value}"
+        )
+
+
+def validate_string_min_length(value: str, min_length: int, field_name: str) -> None:
+    """文字列が最小文字数以上か検証"""
+    if len(value) < min_length:
+        raise ValidationError(
+            f"{field_name} は {min_length} 文字以上である必要があります"
         )
 
 
@@ -339,6 +386,10 @@ def validate_arguments(tool_name: str, arguments: Dict[str, Any]) -> None:
         # パターン検証
         if "pattern" in prop and isinstance(value, str):
             validate_string_pattern(value, prop["pattern"], field)
+
+        # 最小文字数検証
+        if "minLength" in prop and isinstance(value, str):
+            validate_string_min_length(value, prop["minLength"], field)
 
         # 列挙値検証
         if "enum" in prop and isinstance(value, str):
@@ -505,6 +556,51 @@ def execute_gh_issue_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict
     return run_gh_tool(build_gh_issue_comments_args(repo, arguments["number"]), "gh issue view failed")
 
 
+def build_gh_default_branch_args(repo: str) -> List[str]:
+    """デフォルトブランチ取得の gh コマンド引数を組み立てる"""
+    return ["api", f"repos/{repo}", "--jq", ".default_branch"]
+
+
+def build_gh_pr_create_args(repo: str, branch: str, title: str, body: str, base: str) -> List[str]:
+    """gh_pr_create の gh コマンド引数を組み立てる"""
+    return [
+        "api", f"repos/{repo}/pulls",
+        "-f", f"title={title}",
+        "-f", f"head={branch}",
+        "-f", f"base={base}",
+        "-f", f"body={body}",
+    ]
+
+
+def resolve_default_branch(repo: str) -> str:
+    """リポジトリのデフォルトブランチ名を取得する"""
+    stdout, stderr, code = execute_gh_command(build_gh_default_branch_args(repo))
+
+    if code != 0:
+        raise ToolExecutionError(f"デフォルトブランチの取得に失敗しました: {stderr}")
+
+    default_branch = stdout.strip()
+    if not default_branch:
+        raise ToolExecutionError("デフォルトブランチを解決できませんでした")
+
+    return default_branch
+
+
+def execute_gh_pr_create(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_pr_create ツールの実行"""
+    branch = arguments["branch"]
+    validate_branch_name(branch, "branch")
+
+    if "base" in arguments:
+        base = arguments["base"]
+        validate_branch_name(base, "base")
+    else:
+        base = resolve_default_branch(repo)
+
+    args = build_gh_pr_create_args(repo, branch, arguments["title"], arguments["body"], base)
+    return run_gh_tool(args, "gh pr create failed")
+
+
 def build_git_push_args(path: str, branch: str) -> List[str]:
     """git_push の git コマンド引数を組み立てる"""
     return ["-C", path, "push", "origin", branch]
@@ -538,6 +634,7 @@ REPO_TOOL_EXECUTORS = {
     "gh_issue_view": execute_gh_issue_view,
     "gh_pr_comments": execute_gh_pr_comments,
     "gh_issue_comments": execute_gh_issue_comments,
+    "gh_pr_create": execute_gh_pr_create,
 }
 
 

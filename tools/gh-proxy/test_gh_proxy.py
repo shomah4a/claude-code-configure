@@ -138,11 +138,12 @@ class ExecuteToolDispatchTest(unittest.TestCase):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.execute_tool("gh_unknown", {"owner": "octocat", "repository_name": "hello-world"})
 
-    def test_既存7ツールがディスパッチ表に登録されている(self):
+    def test_リポジトリ指定ツールがディスパッチ表に登録されている(self):
         self.assertEqual(
             set(gh_proxy.REPO_TOOL_EXECUTORS.keys()),
             {"gh_repo_view", "gh_pr_list", "gh_pr_view", "gh_issue_list",
-             "gh_issue_view", "gh_pr_comments", "gh_issue_comments"},
+             "gh_issue_view", "gh_pr_comments", "gh_issue_comments",
+             "gh_pr_create"},
         )
 
 
@@ -240,6 +241,83 @@ class GitPushSchemaValidationTest(unittest.TestCase):
                 "git_push",
                 {"path": "/home/user/repo", "branch": "main", "owner": "octocat"},
             )
+
+
+class BuildGhPrCreateArgsTest(unittest.TestCase):
+    """gh_pr_create の引数組み立てのテスト"""
+
+    def test_PR作成の引数リストをREST_API呼び出し形式で組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_pr_create_args(
+                "octocat/hello-world", "feature/x", "タイトル", "本文です", "main"),
+            ["api", "repos/octocat/hello-world/pulls",
+             "-f", "title=タイトル",
+             "-f", "head=feature/x",
+             "-f", "base=main",
+             "-f", "body=本文です"],
+        )
+
+    def test_titleが先頭ハイフンでもフラグ値のargv要素として組み立てる(self):
+        args = gh_proxy.build_gh_pr_create_args(
+            "octocat/hello-world", "feature/x", "--evil-flag", "body", "main")
+        title_index = args.index("title=--evil-flag")
+        self.assertEqual(args[title_index - 1], "-f")
+
+    def test_デフォルトブランチ取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_default_branch_args("octocat/hello-world"),
+            ["api", "repos/octocat/hello-world", "--jq", ".default_branch"],
+        )
+
+
+class GhPrCreateSchemaValidationTest(unittest.TestCase):
+    """gh_pr_create のスキーマレベルの引数検証のテスト"""
+
+    def _valid_arguments(self):
+        return {
+            "owner": "octocat",
+            "repository_name": "hello-world",
+            "branch": "feature/x",
+            "title": "タイトル",
+            "body": "本文",
+        }
+
+    def test_baseを省略しても例外にならない(self):
+        gh_proxy.validate_arguments("gh_pr_create", self._valid_arguments())
+
+    def test_baseを指定しても例外にならない(self):
+        arguments = self._valid_arguments()
+        arguments["base"] = "develop"
+        gh_proxy.validate_arguments("gh_pr_create", arguments)
+
+    def test_titleが空文字だとValidationErrorになる(self):
+        arguments = self._valid_arguments()
+        arguments["title"] = ""
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_pr_create", arguments)
+
+    def test_bodyが空文字でも例外にならない(self):
+        arguments = self._valid_arguments()
+        arguments["body"] = ""
+        gh_proxy.validate_arguments("gh_pr_create", arguments)
+
+    def test_branchが先頭ハイフンだとValidationErrorになる(self):
+        arguments = self._valid_arguments()
+        arguments["branch"] = "--force"
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_pr_create", arguments)
+
+    def test_baseが先頭ハイフンだとValidationErrorになる(self):
+        arguments = self._valid_arguments()
+        arguments["base"] = "-main"
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_pr_create", arguments)
+
+    def test_branchが欠けているとValidationErrorになる(self):
+        arguments = self._valid_arguments()
+        del arguments["branch"]
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_pr_create", arguments)
 
 
 if __name__ == "__main__":
