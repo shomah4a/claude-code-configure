@@ -444,6 +444,19 @@ def execute_gh_issue_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict
     return run_gh_tool(build_gh_issue_comments_args(repo, arguments["number"]), "gh issue view failed")
 
 
+# owner/repository_name を引数に取るツールの実行関数
+# 実行関数は (repo, arguments) を受け取る
+REPO_TOOL_EXECUTORS = {
+    "gh_repo_view": execute_gh_repo_view,
+    "gh_pr_list": execute_gh_pr_list,
+    "gh_pr_view": execute_gh_pr_view,
+    "gh_issue_list": execute_gh_issue_list,
+    "gh_issue_view": execute_gh_issue_view,
+    "gh_pr_comments": execute_gh_pr_comments,
+    "gh_issue_comments": execute_gh_issue_comments,
+}
+
+
 def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     ツールを実行
@@ -455,26 +468,12 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, An
     Returns:
         MCP content 形式の結果リスト
     """
-    owner = arguments["owner"]
-    repo_name = arguments["repository_name"]
-    repo = f"{owner}/{repo_name}"
-
-    if tool_name == "gh_repo_view":
-        return execute_gh_repo_view(repo, arguments)
-    elif tool_name == "gh_pr_list":
-        return execute_gh_pr_list(repo, arguments)
-    elif tool_name == "gh_pr_view":
-        return execute_gh_pr_view(repo, arguments)
-    elif tool_name == "gh_issue_list":
-        return execute_gh_issue_list(repo, arguments)
-    elif tool_name == "gh_issue_view":
-        return execute_gh_issue_view(repo, arguments)
-    elif tool_name == "gh_pr_comments":
-        return execute_gh_pr_comments(repo, arguments)
-    elif tool_name == "gh_issue_comments":
-        return execute_gh_issue_comments(repo, arguments)
-    else:
+    executor = REPO_TOOL_EXECUTORS.get(tool_name)
+    if executor is None:
         raise ValidationError(f"未知のツール: {tool_name}")
+
+    repo = f"{arguments['owner']}/{arguments['repository_name']}"
+    return executor(repo, arguments)
 
 
 def handle_initialize(params: Dict[str, Any]) -> Dict[str, Any]:

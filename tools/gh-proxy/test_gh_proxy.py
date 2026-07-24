@@ -130,5 +130,20 @@ class ValidateArgumentsTest(unittest.TestCase):
         )
 
 
+class ExecuteToolDispatchTest(unittest.TestCase):
+    """execute_tool のディスパッチの回帰テスト"""
+
+    def test_未知のツール名を実行するとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.execute_tool("gh_unknown", {"owner": "octocat", "repository_name": "hello-world"})
+
+    def test_既存7ツールがディスパッチ表に登録されている(self):
+        self.assertEqual(
+            set(gh_proxy.REPO_TOOL_EXECUTORS.keys()),
+            {"gh_repo_view", "gh_pr_list", "gh_pr_view", "gh_issue_list",
+             "gh_issue_view", "gh_pr_comments", "gh_issue_comments"},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
