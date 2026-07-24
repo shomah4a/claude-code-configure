@@ -692,11 +692,20 @@ def build_git_merge_abort_args(path: str) -> List[str]:
     return ["-C", path, "merge", "--abort"]
 
 
-def is_merge_conflict(returncode: int, stdout: str) -> bool:
-    """merge の実行結果がコンフリクトによる失敗かを判定する"""
-    if returncode == 0:
-        return False
-    return "CONFLICT" in stdout or "Automatic merge failed" in stdout
+def build_git_merge_head_check_args(path: str) -> List[str]:
+    """マージ途中状態 (MERGE_HEAD の存在) を確認する git コマンド引数を組み立てる"""
+    return ["-C", path, "rev-parse", "-q", "--verify", "MERGE_HEAD"]
+
+
+def is_merge_in_progress(path: str) -> bool:
+    """
+    path のリポジトリがマージ途中状態かを MERGE_HEAD の存在で判定する
+
+    git のエラーメッセージはロケールにより翻訳されるため、
+    文字列一致ではなく MERGE_HEAD の有無で判定する。
+    """
+    stdout, stderr, code = execute_git_command(build_git_merge_head_check_args(path))
+    return code == 0
 
 
 def abort_conflicted_merge(path: str) -> None:
@@ -725,7 +734,7 @@ def execute_git_merge_default_branch(arguments: Dict[str, Any]) -> List[Dict[str
 
     stdout, stderr, code = execute_git_command(build_git_merge_args(path, default_branch))
 
-    if is_merge_conflict(code, stdout):
+    if code != 0 and is_merge_in_progress(path):
         abort_conflicted_merge(path)
         raise ToolExecutionError(
             f"マージがコンフリクトしたため merge --abort で巻き戻しました: {stdout}{stderr}"

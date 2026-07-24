@@ -358,23 +358,61 @@ class BuildGitMergeDefaultBranchArgsTest(unittest.TestCase):
             ["-C", "/home/user/repo", "merge", "--abort"],
         )
 
+    def test_パスからMERGE_HEAD存在確認の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_merge_head_check_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        )
 
-class IsMergeConflictTest(unittest.TestCase):
-    """merge 実行結果のコンフリクト判定のテスト"""
 
-    def test_終了コード0はコンフリクトと判定しない(self):
-        self.assertFalse(gh_proxy.is_merge_conflict(0, "Merge made by the 'ort' strategy."))
+class MergeInProgressDetectionTest(unittest.TestCase):
+    """実 git リポジトリでのマージ途中状態判定と巻き戻しのテスト"""
 
-    def test_終了コード非0でstdoutにCONFLICTがあるとコンフリクトと判定する(self):
-        stdout = "CONFLICT (content): Merge conflict in main.py\n"
-        self.assertTrue(gh_proxy.is_merge_conflict(1, stdout))
+    def _run_git(self, *args):
+        stdout, stderr, code = gh_proxy.execute_git_command(list(args))
+        self.assertEqual(code, 0, stderr)
 
-    def test_終了コード非0でstdoutにAutomatic_merge_failedがあるとコンフリクトと判定する(self):
-        stdout = "Automatic merge failed; fix conflicts and then commit the result.\n"
-        self.assertTrue(gh_proxy.is_merge_conflict(1, stdout))
+    def _write_file(self, repo_dir, content):
+        with open(os.path.join(repo_dir, "data.txt"), "w") as f:
+            f.write(content)
 
-    def test_終了コード非0でもコンフリクト表示がなければコンフリクトと判定しない(self):
-        self.assertFalse(gh_proxy.is_merge_conflict(128, ""))
+    def _create_repo_with_conflicting_branch(self, repo_dir):
+        """main と topic で同一ファイルを別内容に変更したリポジトリを作る"""
+        self._run_git("-C", repo_dir, "init", "-q", "-b", "main")
+        self._run_git("-C", repo_dir, "config", "user.email", "test@example.com")
+        self._run_git("-C", repo_dir, "config", "user.name", "test")
+        self._write_file(repo_dir, "base\n")
+        self._run_git("-C", repo_dir, "add", "data.txt")
+        self._run_git("-C", repo_dir, "commit", "-q", "-m", "base")
+        self._run_git("-C", repo_dir, "checkout", "-q", "-b", "topic")
+        self._write_file(repo_dir, "topic\n")
+        self._run_git("-C", repo_dir, "commit", "-q", "-am", "topic")
+        self._run_git("-C", repo_dir, "checkout", "-q", "main")
+        self._write_file(repo_dir, "main\n")
+        self._run_git("-C", repo_dir, "commit", "-q", "-am", "main")
+
+    def _merge_topic_expecting_conflict(self, repo_dir):
+        stdout, stderr, code = gh_proxy.execute_git_command(
+            ["-C", repo_dir, "merge", "topic", "--no-edit"])
+        self.assertNotEqual(code, 0)
+
+    def test_マージしていないリポジトリはマージ途中状態と判定しない(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            self.assertFalse(gh_proxy.is_merge_in_progress(repo_dir))
+
+    def test_コンフリクトしたマージの後はマージ途中状態と判定する(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            self._merge_topic_expecting_conflict(repo_dir)
+            self.assertTrue(gh_proxy.is_merge_in_progress(repo_dir))
+
+    def test_コンフリクトしたマージを巻き戻すとマージ途中状態でなくなる(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            self._merge_topic_expecting_conflict(repo_dir)
+            gh_proxy.abort_conflicted_merge(repo_dir)
+            self.assertFalse(gh_proxy.is_merge_in_progress(repo_dir))
 
 
 class GitMergeDefaultBranchSchemaValidationTest(unittest.TestCase):
