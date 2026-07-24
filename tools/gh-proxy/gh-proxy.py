@@ -708,7 +708,7 @@ def is_merge_in_progress(path: str) -> bool:
     return code == 0
 
 
-def validate_no_merge_in_progress(path: str) -> None:
+def ensure_no_merge_in_progress(path: str) -> None:
     """
     リポジトリがマージ途中状態でないことを検証する
 
@@ -738,7 +738,7 @@ def execute_git_merge_default_branch(arguments: Dict[str, Any]) -> List[Dict[str
     path = arguments["path"]
 
     validate_repository_path(path)
-    validate_no_merge_in_progress(path)
+    ensure_no_merge_in_progress(path)
 
     default_branch = resolve_local_repo_default_branch(path)
     validate_branch_name(default_branch, "default_branch")
