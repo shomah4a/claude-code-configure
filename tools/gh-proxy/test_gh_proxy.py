@@ -414,6 +414,18 @@ class MergeInProgressDetectionTest(unittest.TestCase):
             gh_proxy.abort_conflicted_merge(repo_dir)
             self.assertFalse(gh_proxy.is_merge_in_progress(repo_dir))
 
+    def test_マージしていないリポジトリのマージ途中状態検証は例外にならない(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            gh_proxy.validate_no_merge_in_progress(repo_dir)
+
+    def test_マージ途中状態のリポジトリの検証はToolExecutionErrorになる(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self._create_repo_with_conflicting_branch(repo_dir)
+            self._merge_topic_expecting_conflict(repo_dir)
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                gh_proxy.validate_no_merge_in_progress(repo_dir)
+
 
 class GitMergeDefaultBranchSchemaValidationTest(unittest.TestCase):
     """git_merge_default_branch のスキーマレベルの引数検証のテスト"""
