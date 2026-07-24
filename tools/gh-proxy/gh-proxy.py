@@ -342,19 +342,13 @@ def execute_gh_command(args: List[str], timeout: int = None) -> Tuple[str, str, 
         raise ToolExecutionError(f"コマンド実行中にエラーが発生しました: {str(e)}")
 
 
-def execute_gh_repo_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """gh_repo_view ツールの実行"""
-    args = ["repo", "view", repo, "--json", "name,owner,description,url,stargazerCount,forkCount,createdAt,updatedAt"]
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh repo view failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+def build_gh_repo_view_args(repo: str) -> List[str]:
+    """gh_repo_view の gh コマンド引数を組み立てる"""
+    return ["repo", "view", repo, "--json", "name,owner,description,url,stargazerCount,forkCount,createdAt,updatedAt"]
 
 
-def execute_gh_pr_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """gh_pr_list ツールの実行"""
+def build_gh_pr_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
+    """gh_pr_list の gh コマンド引数を組み立てる"""
     args = ["pr", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt"]
 
     if "state" in arguments:
@@ -366,29 +360,16 @@ def execute_gh_pr_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, A
     if "search" in arguments:
         args.extend(["--search", arguments["search"]])
 
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh pr list failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+    return args
 
 
-def execute_gh_pr_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """gh_pr_view ツールの実行"""
-    number = arguments["number"]
-    args = ["pr", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt,mergeable,mergedAt"]
-
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh pr view failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+def build_gh_pr_view_args(repo: str, number: int) -> List[str]:
+    """gh_pr_view の gh コマンド引数を組み立てる"""
+    return ["pr", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt,mergeable,mergedAt"]
 
 
-def execute_gh_issue_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """gh_issue_list ツールの実行"""
+def build_gh_issue_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
+    """gh_issue_list の gh コマンド引数を組み立てる"""
     args = ["issue", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt"]
 
     if "state" in arguments:
@@ -400,51 +381,67 @@ def execute_gh_issue_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str
     if "search" in arguments:
         args.extend(["--search", arguments["search"]])
 
+    return args
+
+
+def build_gh_issue_view_args(repo: str, number: int) -> List[str]:
+    """gh_issue_view の gh コマンド引数を組み立てる"""
+    return ["issue", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt"]
+
+
+def build_gh_pr_comments_args(repo: str, number: int) -> List[str]:
+    """gh_pr_comments の gh コマンド引数を組み立てる"""
+    return ["pr", "view", str(number), "--repo", repo, "--json", "comments"]
+
+
+def build_gh_issue_comments_args(repo: str, number: int) -> List[str]:
+    """gh_issue_comments の gh コマンド引数を組み立てる"""
+    return ["issue", "view", str(number), "--repo", repo, "--json", "comments"]
+
+
+def run_gh_tool(args: List[str], error_label: str) -> List[Dict[str, Any]]:
+    """gh コマンドを実行し、結果を MCP content 形式で返す"""
     stdout, stderr, code = execute_gh_command(args)
 
     if code != 0:
-        raise ToolExecutionError(f"gh issue list failed: {stderr}")
+        raise ToolExecutionError(f"{error_label}: {stderr}")
 
     return [{"type": "text", "text": stdout}]
+
+
+def execute_gh_repo_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_repo_view ツールの実行"""
+    return run_gh_tool(build_gh_repo_view_args(repo), "gh repo view failed")
+
+
+def execute_gh_pr_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_pr_list ツールの実行"""
+    return run_gh_tool(build_gh_pr_list_args(repo, arguments), "gh pr list failed")
+
+
+def execute_gh_pr_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_pr_view ツールの実行"""
+    return run_gh_tool(build_gh_pr_view_args(repo, arguments["number"]), "gh pr view failed")
+
+
+def execute_gh_issue_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_issue_list ツールの実行"""
+    return run_gh_tool(build_gh_issue_list_args(repo, arguments), "gh issue list failed")
 
 
 def execute_gh_issue_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_issue_view ツールの実行"""
-    number = arguments["number"]
-    args = ["issue", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt"]
-
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh issue view failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+    return run_gh_tool(build_gh_issue_view_args(repo, arguments["number"]), "gh issue view failed")
 
 
 def execute_gh_pr_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_pr_comments ツールの実行"""
-    number = arguments["number"]
-    args = ["pr", "view", str(number), "--repo", repo, "--json", "comments"]
-
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh pr view failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+    return run_gh_tool(build_gh_pr_comments_args(repo, arguments["number"]), "gh pr view failed")
 
 
 def execute_gh_issue_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_issue_comments ツールの実行"""
-    number = arguments["number"]
-    args = ["issue", "view", str(number), "--repo", repo, "--json", "comments"]
-
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh issue view failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+    return run_gh_tool(build_gh_issue_comments_args(repo, arguments["number"]), "gh issue view failed")
 
 
 def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
