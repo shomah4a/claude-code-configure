@@ -211,6 +211,23 @@ class RepositoryPathValidationTest(unittest.TestCase):
             gh_proxy.validate_repository_path(tmpdir)
 
 
+class DefaultBranchGuardTest(unittest.TestCase):
+    """デフォルトブランチへの push 拒否のテスト"""
+
+    def test_pushブランチがデフォルトブランチと一致するとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_is_not_default("main", "main")
+
+    def test_pushブランチがデフォルトブランチと異なる場合は例外にならない(self):
+        gh_proxy.validate_branch_is_not_default("feature/x", "main")
+
+    def test_カレントリポジトリのデフォルトブランチ取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_local_default_branch_args(),
+            ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+        )
+
+
 class BuildGitPushArgsTest(unittest.TestCase):
     """git_push の引数組み立てのテスト"""
 

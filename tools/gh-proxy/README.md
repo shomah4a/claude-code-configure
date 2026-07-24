@@ -268,6 +268,11 @@ head となるブランチは事前に push されている必要があります
 
 remote は `origin` 固定です。force push、ブランチ削除、その他のオプション指定はできません。
 
+push 先ブランチがデフォルトブランチと一致する場合、push は拒否されます。
+デフォルトブランチは対象リポジトリを作業ディレクトリとして `gh repo view` で判定します。
+判定できない場合（GitHub 以外の remote、gh 未認証等）も push を拒否します（fail-closed）。
+このため git_push の利用には gh と GitHub 認証が必要です。
+
 **例:**
 ```json
 {
@@ -289,7 +294,8 @@ remote は `origin` 固定です。force push、ブランチ削除、その他�
 - Issueの取得（一覧/詳細/コメント）
 
 加えて、以下の書き込み操作を提供します：
-- ブランチのpush（git_push）: remote は origin 固定。force push・ブランチ削除・オプション指定は不可
+- ブランチのpush（git_push）: remote は origin 固定。force push・ブランチ削除・オプション指定は不可。
+  デフォルトブランチへの push は拒否（デフォルトブランチを判定できない場合も拒否）
 - Pull Request作成（gh_pr_create）
 
 git_push の `path` には「絶対パス・ディレクトリ存在・.git 存在」以外の制限を設けていません。

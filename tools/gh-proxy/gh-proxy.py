@@ -406,7 +406,7 @@ def validate_arguments(tool_name: str, arguments: Dict[str, Any]) -> None:
             )
 
 
-def run_subprocess(command: List[str], timeout: Optional[int], command_not_found_message: str) -> Tuple[str, str, int]:
+def run_subprocess(command: List[str], timeout: Optional[int], command_not_found_message: str, cwd: Optional[str] = None) -> Tuple[str, str, int]:
     """
     コマンドを安全に実行
 
@@ -414,6 +414,7 @@ def run_subprocess(command: List[str], timeout: Optional[int], command_not_found
         command: 実行するコマンドと引数のリスト
         timeout: タイムアウト（秒）。Noneの場合はGH_PROXY_TIMEOUT環境変数またはデフォルト30秒を使用
         command_not_found_message: コマンドが存在しない場合のエラーメッセージ
+        cwd: コマンドを実行する作業ディレクトリ。Noneの場合はサーバープロセスの作業ディレクトリ
 
     Returns:
         (stdout, stderr, return_code) のタプル
@@ -426,7 +427,8 @@ def run_subprocess(command: List[str], timeout: Optional[int], command_not_found
             capture_output=True,
             text=True,
             timeout=timeout,
-            shell=False
+            shell=False,
+            cwd=cwd
         )
         return result.stdout, result.stderr, result.returncode
     except subprocess.TimeoutExpired:
@@ -437,12 +439,13 @@ def run_subprocess(command: List[str], timeout: Optional[int], command_not_found
         raise ToolExecutionError(f"コマンド実行中にエラーが発生しました: {str(e)}")
 
 
-def execute_gh_command(args: List[str], timeout: int = None) -> Tuple[str, str, int]:
+def execute_gh_command(args: List[str], timeout: int = None, cwd: Optional[str] = None) -> Tuple[str, str, int]:
     """gh コマンドを安全に実行"""
     return run_subprocess(
         ["gh"] + args,
         timeout,
-        "gh コマンドが見つかりません。GitHub CLI をインストールしてください"
+        "gh コマンドが見つかりません。GitHub CLI をインストールしてください",
+        cwd=cwd
     )
 
 
@@ -607,6 +610,40 @@ def build_git_push_args(path: str, branch: str) -> List[str]:
     return ["-C", path, "push", "origin", branch]
 
 
+def build_gh_local_default_branch_args() -> List[str]:
+    """カレントリポジトリのデフォルトブランチ取得の gh コマンド引数を組み立てる"""
+    return ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
+
+
+def validate_branch_is_not_default(branch: str, default_branch: str) -> None:
+    """push 対象ブランチがデフォルトブランチでないことを検証"""
+    if branch == default_branch:
+        raise ValidationError(
+            f"デフォルトブランチ ({default_branch}) への push は許可されていません"
+        )
+
+
+def resolve_local_repo_default_branch(path: str) -> str:
+    """
+    path のリポジトリのデフォルトブランチ名を gh で取得する
+
+    デフォルトブランチへの push を確実に防ぐため、判定できない場合は
+    例外を送出して push を拒否する (fail-closed)。
+    """
+    stdout, stderr, code = execute_gh_command(build_gh_local_default_branch_args(), cwd=path)
+
+    if code != 0:
+        raise ToolExecutionError(
+            f"デフォルトブランチの取得に失敗したため push を拒否しました: {stderr}"
+        )
+
+    default_branch = stdout.strip()
+    if not default_branch:
+        raise ToolExecutionError("デフォルトブランチを解決できなかったため push を拒否しました")
+
+    return default_branch
+
+
 def execute_git_push(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """git_push ツールの実行"""
     path = arguments["path"]
@@ -614,6 +651,7 @@ def execute_git_push(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     validate_repository_path(path)
     validate_branch_name(branch, "branch")
+    validate_branch_is_not_default(branch, resolve_local_repo_default_branch(path))
 
     stdout, stderr, code = execute_git_command(build_git_push_args(path, branch))
 
