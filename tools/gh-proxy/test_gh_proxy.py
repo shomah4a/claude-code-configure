@@ -6,6 +6,7 @@
 
 import importlib.util
 import os
+import tempfile
 import unittest
 
 _MODULE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gh-proxy.py")
@@ -143,6 +144,102 @@ class ExecuteToolDispatchTest(unittest.TestCase):
             {"gh_repo_view", "gh_pr_list", "gh_pr_view", "gh_issue_list",
              "gh_issue_view", "gh_pr_comments", "gh_issue_comments"},
         )
+
+
+class BranchNameValidationTest(unittest.TestCase):
+    """validate_branch_name のテスト"""
+
+    def test_英数字とスラッシュとドットとハイフンを含むブランチ名を受け入れる(self):
+        gh_proxy.validate_branch_name("feature/foo-bar.v2", "branch")
+
+    def test_先頭がハイフンのブランチ名はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_name("-force", "branch")
+
+    def test_先頭がコロンのブランチ名はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_name(":main", "branch")
+
+    def test_先頭がプラスのブランチ名はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_name("+main", "branch")
+
+    def test_コロンを途中に含むブランチ名はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_name("feature:main", "branch")
+
+    def test_空白を含むブランチ名はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_name("feature branch", "branch")
+
+    def test_ドット2連続を含むブランチ名はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_name("feature..main", "branch")
+
+    def test_空文字のブランチ名はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_name("", "branch")
+
+
+class RepositoryPathValidationTest(unittest.TestCase):
+    """validate_repository_path のテスト"""
+
+    def test_相対パスはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_repository_path("relative/path")
+
+    def test_存在しないディレクトリはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_repository_path("/nonexistent-gh-proxy-test-dir")
+
+    def test_dotgitがないディレクトリはValidationErrorになる(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(gh_proxy.ValidationError):
+                gh_proxy.validate_repository_path(tmpdir)
+
+    def test_dotgitディレクトリを持つディレクトリを受け入れる(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.mkdir(os.path.join(tmpdir, ".git"))
+            gh_proxy.validate_repository_path(tmpdir)
+
+    def test_dotgitファイルを持つディレクトリを受け入れる(self):
+        # git worktree ではリポジトリルートの .git はファイルになる
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, ".git"), "w") as f:
+                f.write("gitdir: /somewhere/.git/worktrees/x\n")
+            gh_proxy.validate_repository_path(tmpdir)
+
+
+class BuildGitPushArgsTest(unittest.TestCase):
+    """git_push の引数組み立てのテスト"""
+
+    def test_パスとブランチからリモートorigin固定の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_push_args("/home/user/repo", "feature/x"),
+            ["-C", "/home/user/repo", "push", "origin", "feature/x"],
+        )
+
+
+class GitPushSchemaValidationTest(unittest.TestCase):
+    """git_push のスキーマレベルの引数検証のテスト"""
+
+    def test_pathとbranchが揃っていれば例外にならない(self):
+        gh_proxy.validate_arguments("git_push", {"path": "/home/user/repo", "branch": "main"})
+
+    def test_branchが先頭ハイフンだとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("git_push", {"path": "/home/user/repo", "branch": "--force"})
+
+    def test_pathが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("git_push", {"branch": "main"})
+
+    def test_ownerフィールドを渡すとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "git_push",
+                {"path": "/home/user/repo", "branch": "main", "owner": "octocat"},
+            )
 
 
 if __name__ == "__main__":

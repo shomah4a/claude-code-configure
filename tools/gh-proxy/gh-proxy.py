@@ -31,6 +31,10 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
+# ブランチ名の許可パターン
+# 先頭の - / : / + を拒否することで、オプション注入・削除refspec・force refspecを防ぐ
+BRANCH_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+
 # ツール定義
 TOOLS = [
     {
@@ -222,6 +226,25 @@ TOOLS = [
             },
             "required": ["owner", "repository_name", "number"]
         }
+    },
+    {
+        "name": "git_push",
+        "description": "クローン済みリポジトリのブランチを origin へ push します",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "クローン済みリポジトリルートの絶対パス"
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "push するブランチ名",
+                    "pattern": BRANCH_NAME_PATTERN
+                }
+            },
+            "required": ["path", "branch"]
+        }
     }
 ]
 
@@ -262,6 +285,25 @@ def validate_enum(value: str, enum_values: List[str], field_name: str) -> None:
         raise ValidationError(
             f"{field_name} は {', '.join(enum_values)} のいずれかである必要があります: {value}"
         )
+
+
+def validate_branch_name(branch: str, field_name: str) -> None:
+    """ブランチ名が push に安全な形式か検証"""
+    validate_string_pattern(branch, BRANCH_NAME_PATTERN, field_name)
+    if ".." in branch:
+        raise ValidationError(
+            f"{field_name} に '..' を含めることはできません: {branch}"
+        )
+
+
+def validate_repository_path(path: str) -> None:
+    """クローン済みリポジトリルートのパスか検証"""
+    if not os.path.isabs(path):
+        raise ValidationError(f"path は絶対パスである必要があります: {path}")
+    if not os.path.isdir(path):
+        raise ValidationError(f"path のディレクトリが存在しません: {path}")
+    if not os.path.exists(os.path.join(path, ".git")):
+        raise ValidationError(f"path は git リポジトリのルートではありません: {path}")
 
 
 def validate_arguments(tool_name: str, arguments: Dict[str, Any]) -> None:
@@ -312,13 +354,14 @@ def validate_arguments(tool_name: str, arguments: Dict[str, Any]) -> None:
             )
 
 
-def execute_gh_command(args: List[str], timeout: int = None) -> Tuple[str, str, int]:
+def run_subprocess(command: List[str], timeout: Optional[int], command_not_found_message: str) -> Tuple[str, str, int]:
     """
-    gh コマンドを安全に実行
+    コマンドを安全に実行
 
     Args:
-        args: gh コマンドの引数リスト
+        command: 実行するコマンドと引数のリスト
         timeout: タイムアウト（秒）。Noneの場合はGH_PROXY_TIMEOUT環境変数またはデフォルト30秒を使用
+        command_not_found_message: コマンドが存在しない場合のエラーメッセージ
 
     Returns:
         (stdout, stderr, return_code) のタプル
@@ -327,7 +370,7 @@ def execute_gh_command(args: List[str], timeout: int = None) -> Tuple[str, str, 
         timeout = TIMEOUT
     try:
         result = subprocess.run(
-            ["gh"] + args,
+            command,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -337,9 +380,27 @@ def execute_gh_command(args: List[str], timeout: int = None) -> Tuple[str, str, 
     except subprocess.TimeoutExpired:
         raise ToolExecutionError(f"コマンド実行がタイムアウトしました（{timeout}秒）")
     except FileNotFoundError:
-        raise ToolExecutionError("gh コマンドが見つかりません。GitHub CLI をインストールしてください")
+        raise ToolExecutionError(command_not_found_message)
     except Exception as e:
         raise ToolExecutionError(f"コマンド実行中にエラーが発生しました: {str(e)}")
+
+
+def execute_gh_command(args: List[str], timeout: int = None) -> Tuple[str, str, int]:
+    """gh コマンドを安全に実行"""
+    return run_subprocess(
+        ["gh"] + args,
+        timeout,
+        "gh コマンドが見つかりません。GitHub CLI をインストールしてください"
+    )
+
+
+def execute_git_command(args: List[str], timeout: int = None) -> Tuple[str, str, int]:
+    """git コマンドを安全に実行"""
+    return run_subprocess(
+        ["git"] + args,
+        timeout,
+        "git コマンドが見つかりません。git をインストールしてください"
+    )
 
 
 def build_gh_repo_view_args(repo: str) -> List[str]:
@@ -444,6 +505,29 @@ def execute_gh_issue_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict
     return run_gh_tool(build_gh_issue_comments_args(repo, arguments["number"]), "gh issue view failed")
 
 
+def build_git_push_args(path: str, branch: str) -> List[str]:
+    """git_push の git コマンド引数を組み立てる"""
+    return ["-C", path, "push", "origin", branch]
+
+
+def execute_git_push(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """git_push ツールの実行"""
+    path = arguments["path"]
+    branch = arguments["branch"]
+
+    validate_repository_path(path)
+    validate_branch_name(branch, "branch")
+
+    stdout, stderr, code = execute_git_command(build_git_push_args(path, branch))
+
+    if code != 0:
+        raise ToolExecutionError(f"git push failed: {stderr}")
+
+    # git push は進捗や結果を stderr に出力するため、stdout が空の場合は stderr を返す
+    output = stdout if stdout.strip() else stderr
+    return [{"type": "text", "text": output}]
+
+
 # owner/repository_name を引数に取るツールの実行関数
 # 実行関数は (repo, arguments) を受け取る
 REPO_TOOL_EXECUTORS = {
@@ -468,6 +552,9 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, An
     Returns:
         MCP content 形式の結果リスト
     """
+    if tool_name == "git_push":
+        return execute_git_push(arguments)
+
     executor = REPO_TOOL_EXECUTORS.get(tool_name)
     if executor is None:
         raise ValidationError(f"未知のツール: {tool_name}")
