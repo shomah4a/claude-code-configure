@@ -1,17 +1,19 @@
 # GitHub CLI MCP Proxy Server
 
-Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) コマンドへのreadonly操作を提供します。
+Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / git コマンドへの操作を提供します。
 
 ## 概要
 
-このサーバーは、Claude CodeなどのMCPクライアントに対して、GitHubのreadonly操作を安全に提供します。
+このサーバーは、Claude CodeなどのMCPクライアントに対して、GitHubのreadonly操作と、
+一部の書き込み操作（git push、Pull Request作成）を提供します。
 ホスト側でサーバーを起動し、Dockerコンテナで動作するClaude Codeから HTTP経由でアクセスすることで、
-認証情報を渡すことなくGitHubデータを取得できます。
+認証情報を渡すことなくGitHubを操作できます。
 
 ## 必要要件
 
 - Python 3.8 以上（標準ライブラリのみ使用）
 - GitHub CLI (gh) 2.0.0 以上
+- git（git_push を利用する場合）
 - GitHub認証済みの環境（`gh auth status` で確認可能）
 
 ## セットアップ
@@ -34,7 +36,8 @@ sudo apt install gh
 gh auth login
 ```
 
-認証トークンのスコープは `repo:read` または `public_repo` のみに制限することを推奨します。
+readonly ツールのみ利用する場合、認証トークンのスコープは `repo:read` または `public_repo` のみに制限することを推奨します。
+git_push / gh_pr_create を利用する場合は、対象リポジトリへの書き込みが可能なスコープ（`repo` 等）が必要です。
 
 ### 3. サーバーの起動
 
@@ -52,7 +55,7 @@ GH_PROXY_TIMEOUT=60 python3 tools/gh-proxy/gh-proxy.py
 GH_PROXY_PORT=30800 GH_PROXY_TIMEOUT=60 python3 tools/gh-proxy/gh-proxy.py
 ```
 
-サーバーは `127.0.0.1` でリッスンし、ローカルホストからの接続のみを受け付けます。
+サーバーはすべてのネットワークインターフェースで待ち受けます（bind制限や認証はありません）。
 Dockerコンテナからは `host.docker.internal` 経由でアクセス可能です。
 
 ## Claude Codeとの連携
@@ -226,21 +229,81 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 }
 ```
 
+### 8. gh_pr_create
+
+指定されたリポジトリにPull Requestを作成します。
+
+**引数:**
+- `owner` (必須): リポジトリのオーナー名
+- `repository_name` (必須): リポジトリ名
+- `branch` (必須): head となるブランチ名
+- `title` (必須): Pull Request のタイトル（空文字不可）
+- `body` (必須): Pull Request の本文（空文字可）
+- `base` (任意): base となるブランチ名。省略時はリポジトリのデフォルトブランチを使用
+
+`gh api repos/{owner}/{repo}/pulls` への POST で作成するため、git リポジトリ文脈に依存せず非対話で動作します。
+head となるブランチは事前に push されている必要があります。
+
+**例:**
+```json
+{
+  "name": "gh_pr_create",
+  "arguments": {
+    "owner": "anthropics",
+    "repository_name": "anthropic-sdk-python",
+    "branch": "feature/new-api",
+    "title": "新APIの追加",
+    "body": "変更内容の説明"
+  }
+}
+```
+
+### 9. git_push
+
+クローン済みリポジトリのブランチを origin へ push します。
+
+**引数:**
+- `path` (必須): クローン済みリポジトリルートの絶対パス（サーバーが動作するホスト側ファイルシステム上のパス）
+- `branch` (必須): push するブランチ名
+
+remote は `origin` 固定です。force push、ブランチ削除、その他のオプション指定はできません。
+
+**例:**
+```json
+{
+  "name": "git_push",
+  "arguments": {
+    "path": "/home/user/work/my-repo",
+    "branch": "feature/new-api"
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
-### 1. readonly操作のみ提供
+### 1. 提供する操作の範囲
 
-このサーバーは以下のreadonly操作のみを提供します：
+このサーバーは以下のreadonly操作を提供します：
 - リポジトリ情報の取得
 - Pull Requestの取得（一覧/詳細/コメント）
 - Issueの取得（一覧/詳細/コメント）
 
-書き込み操作（PR作成、Issue作成、コメント投稿など）は一切提供していません。
+加えて、以下の書き込み操作を提供します：
+- ブランチのpush（git_push）: remote は origin 固定。force push・ブランチ削除・オプション指定は不可
+- Pull Request作成（gh_pr_create）
+
+git_push の `path` には「絶対パス・ディレクトリ存在・.git 存在」以外の制限を設けていません。
+サーバープロセスから到達可能な任意の git リポジトリを push 対象に指定できるため、
+信頼できないクライアントからアクセス可能な環境で運用する場合はこの点を考慮してください。
 
 ### 2. 引数バリデーション
 
 すべてのツール引数は厳密にバリデーションされます：
 - オーナー名・リポジトリ名: 正規表現パターンマッチング
+- ブランチ名: 正規表現パターンマッチング。先頭の `-` / `:` / `+` および `..` を拒否
+  （オプション注入・削除refspec・force refspecの防止）
+- リポジトリパス: 絶対パス・ディレクトリ存在・.git 存在の確認
+- PRタイトル: 空文字の拒否
 - 数値: 範囲チェック
 - 状態: 列挙値チェック
 
@@ -252,9 +315,11 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 
 ### 4. 認証トークンのスコープ制限
 
-GitHub認証トークンは以下のスコープに制限することを推奨します：
-- `repo:read`: プライベートリポジトリへの読み取りアクセス
-- `public_repo`: パブリックリポジトリへの読み取りアクセス
+GitHub認証トークンは利用するツールに応じて必要最小限のスコープに制限することを推奨します：
+- readonly ツールのみ利用する場合: `repo:read` または `public_repo`
+- git_push / gh_pr_create を利用する場合: 対象リポジトリへの書き込みが可能なスコープ（`repo` 等）
+
+なお、git_push はホスト側の git の認証設定（credential helper 等）を利用します。
 
 ## トラブルシューティング
 

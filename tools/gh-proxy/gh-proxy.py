@@ -3,10 +3,11 @@
 GitHub CLI MCP Proxy Server
 
 Model Context Protocol (MCP) サーバーとして動作し、
-GitHub CLI (gh) コマンドへのreadonly操作を提供します。
+GitHub CLI (gh) / git コマンドへの操作を提供します。
+readonly操作に加え、git push と Pull Request 作成の書き込み操作を提供します。
 
 このサーバーはHTTP経由でJSON-RPC 2.0メッセージを受け取り、
-安全にgh コマンドを実行して結果を返します。
+安全にgh / git コマンドを実行して結果を返します。
 """
 
 import json
@@ -22,7 +23,7 @@ PORT = int(os.environ.get('GH_PROXY_PORT', '30721'))
 TIMEOUT = int(os.environ.get('GH_PROXY_TIMEOUT', '30'))
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
