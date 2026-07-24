@@ -3,10 +3,11 @@
 GitHub CLI MCP Proxy Server
 
 Model Context Protocol (MCP) サーバーとして動作し、
-GitHub CLI (gh) コマンドへのreadonly操作を提供します。
+GitHub CLI (gh) / git コマンドへの操作を提供します。
+readonly操作に加え、git push と Pull Request 作成の書き込み操作を提供します。
 
 このサーバーはHTTP経由でJSON-RPC 2.0メッセージを受け取り、
-安全にgh コマンドを実行して結果を返します。
+安全にgh / git コマンドを実行して結果を返します。
 """
 
 import json
@@ -22,7 +23,7 @@ PORT = int(os.environ.get('GH_PROXY_PORT', '30721'))
 TIMEOUT = int(os.environ.get('GH_PROXY_TIMEOUT', '30'))
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
@@ -30,6 +31,10 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+
+# ブランチ名の許可パターン
+# 先頭の - / : / + を拒否することで、オプション注入・削除refspec・force refspecを防ぐ
+BRANCH_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
 
 # ツール定義
 TOOLS = [
@@ -222,6 +227,64 @@ TOOLS = [
             },
             "required": ["owner", "repository_name", "number"]
         }
+    },
+    {
+        "name": "gh_pr_create",
+        "description": "指定されたリポジトリにPull Requestを作成します",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "リポジトリのオーナー名",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                },
+                "repository_name": {
+                    "type": "string",
+                    "description": "リポジトリ名",
+                    "pattern": "^[a-zA-Z0-9._-]+$"
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "head となるブランチ名",
+                    "pattern": BRANCH_NAME_PATTERN
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Pull Request のタイトル",
+                    "minLength": 1
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Pull Request の本文"
+                },
+                "base": {
+                    "type": "string",
+                    "description": "base となるブランチ名。省略時はリポジトリのデフォルトブランチを使用",
+                    "pattern": BRANCH_NAME_PATTERN
+                }
+            },
+            "required": ["owner", "repository_name", "branch", "title", "body"]
+        }
+    },
+    {
+        "name": "git_push",
+        "description": "クローン済みリポジトリのブランチを origin へ push します",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "クローン済みリポジトリルートの絶対パス"
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "push するブランチ名",
+                    "pattern": BRANCH_NAME_PATTERN
+                }
+            },
+            "required": ["path", "branch"]
+        }
     }
 ]
 
@@ -256,12 +319,39 @@ def validate_integer_range(value: int, minimum: Optional[int], maximum: Optional
         )
 
 
+def validate_string_min_length(value: str, min_length: int, field_name: str) -> None:
+    """文字列が最小文字数以上か検証"""
+    if len(value) < min_length:
+        raise ValidationError(
+            f"{field_name} は {min_length} 文字以上である必要があります"
+        )
+
+
 def validate_enum(value: str, enum_values: List[str], field_name: str) -> None:
     """文字列が指定された列挙値のいずれかに一致するか検証"""
     if value not in enum_values:
         raise ValidationError(
             f"{field_name} は {', '.join(enum_values)} のいずれかである必要があります: {value}"
         )
+
+
+def validate_branch_name(branch: str, field_name: str) -> None:
+    """ブランチ名が push に安全な形式か検証"""
+    validate_string_pattern(branch, BRANCH_NAME_PATTERN, field_name)
+    if ".." in branch:
+        raise ValidationError(
+            f"{field_name} に '..' を含めることはできません: {branch}"
+        )
+
+
+def validate_repository_path(path: str) -> None:
+    """クローン済みリポジトリルートのパスか検証"""
+    if not os.path.isabs(path):
+        raise ValidationError(f"path は絶対パスである必要があります: {path}")
+    if not os.path.isdir(path):
+        raise ValidationError(f"path のディレクトリが存在しません: {path}")
+    if not os.path.exists(os.path.join(path, ".git")):
+        raise ValidationError(f"path は git リポジトリのルートではありません: {path}")
 
 
 def validate_arguments(tool_name: str, arguments: Dict[str, Any]) -> None:
@@ -298,6 +388,10 @@ def validate_arguments(tool_name: str, arguments: Dict[str, Any]) -> None:
         if "pattern" in prop and isinstance(value, str):
             validate_string_pattern(value, prop["pattern"], field)
 
+        # 最小文字数検証
+        if "minLength" in prop and isinstance(value, str):
+            validate_string_min_length(value, prop["minLength"], field)
+
         # 列挙値検証
         if "enum" in prop and isinstance(value, str):
             validate_enum(value, prop["enum"], field)
@@ -312,13 +406,15 @@ def validate_arguments(tool_name: str, arguments: Dict[str, Any]) -> None:
             )
 
 
-def execute_gh_command(args: List[str], timeout: int = None) -> Tuple[str, str, int]:
+def run_subprocess(command: List[str], timeout: Optional[int], command_not_found_message: str, cwd: Optional[str] = None) -> Tuple[str, str, int]:
     """
-    gh コマンドを安全に実行
+    コマンドを安全に実行
 
     Args:
-        args: gh コマンドの引数リスト
+        command: 実行するコマンドと引数のリスト
         timeout: タイムアウト（秒）。Noneの場合はGH_PROXY_TIMEOUT環境変数またはデフォルト30秒を使用
+        command_not_found_message: コマンドが存在しない場合のエラーメッセージ
+        cwd: コマンドを実行する作業ディレクトリ。Noneの場合はサーバープロセスの作業ディレクトリ
 
     Returns:
         (stdout, stderr, return_code) のタプル
@@ -327,34 +423,48 @@ def execute_gh_command(args: List[str], timeout: int = None) -> Tuple[str, str, 
         timeout = TIMEOUT
     try:
         result = subprocess.run(
-            ["gh"] + args,
+            command,
             capture_output=True,
             text=True,
             timeout=timeout,
-            shell=False
+            shell=False,
+            cwd=cwd
         )
         return result.stdout, result.stderr, result.returncode
     except subprocess.TimeoutExpired:
         raise ToolExecutionError(f"コマンド実行がタイムアウトしました（{timeout}秒）")
     except FileNotFoundError:
-        raise ToolExecutionError("gh コマンドが見つかりません。GitHub CLI をインストールしてください")
+        raise ToolExecutionError(command_not_found_message)
     except Exception as e:
         raise ToolExecutionError(f"コマンド実行中にエラーが発生しました: {str(e)}")
 
 
-def execute_gh_repo_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """gh_repo_view ツールの実行"""
-    args = ["repo", "view", repo, "--json", "name,owner,description,url,stargazerCount,forkCount,createdAt,updatedAt"]
-    stdout, stderr, code = execute_gh_command(args)
+def execute_gh_command(args: List[str], timeout: int = None, cwd: Optional[str] = None) -> Tuple[str, str, int]:
+    """gh コマンドを安全に実行"""
+    return run_subprocess(
+        ["gh"] + args,
+        timeout,
+        "gh コマンドが見つかりません。GitHub CLI をインストールしてください",
+        cwd=cwd
+    )
 
-    if code != 0:
-        raise ToolExecutionError(f"gh repo view failed: {stderr}")
 
-    return [{"type": "text", "text": stdout}]
+def execute_git_command(args: List[str], timeout: int = None) -> Tuple[str, str, int]:
+    """git コマンドを安全に実行"""
+    return run_subprocess(
+        ["git"] + args,
+        timeout,
+        "git コマンドが見つかりません。git をインストールしてください"
+    )
 
 
-def execute_gh_pr_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """gh_pr_list ツールの実行"""
+def build_gh_repo_view_args(repo: str) -> List[str]:
+    """gh_repo_view の gh コマンド引数を組み立てる"""
+    return ["repo", "view", repo, "--json", "name,owner,description,url,stargazerCount,forkCount,createdAt,updatedAt"]
+
+
+def build_gh_pr_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
+    """gh_pr_list の gh コマンド引数を組み立てる"""
     args = ["pr", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt"]
 
     if "state" in arguments:
@@ -366,29 +476,16 @@ def execute_gh_pr_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, A
     if "search" in arguments:
         args.extend(["--search", arguments["search"]])
 
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh pr list failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+    return args
 
 
-def execute_gh_pr_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """gh_pr_view ツールの実行"""
-    number = arguments["number"]
-    args = ["pr", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt,mergeable,mergedAt"]
-
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh pr view failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+def build_gh_pr_view_args(repo: str, number: int) -> List[str]:
+    """gh_pr_view の gh コマンド引数を組み立てる"""
+    return ["pr", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt,mergeable,mergedAt"]
 
 
-def execute_gh_issue_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """gh_issue_list ツールの実行"""
+def build_gh_issue_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
+    """gh_issue_list の gh コマンド引数を組み立てる"""
     args = ["issue", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt"]
 
     if "state" in arguments:
@@ -400,51 +497,184 @@ def execute_gh_issue_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str
     if "search" in arguments:
         args.extend(["--search", arguments["search"]])
 
+    return args
+
+
+def build_gh_issue_view_args(repo: str, number: int) -> List[str]:
+    """gh_issue_view の gh コマンド引数を組み立てる"""
+    return ["issue", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt"]
+
+
+def build_gh_pr_comments_args(repo: str, number: int) -> List[str]:
+    """gh_pr_comments の gh コマンド引数を組み立てる"""
+    return ["pr", "view", str(number), "--repo", repo, "--json", "comments"]
+
+
+def build_gh_issue_comments_args(repo: str, number: int) -> List[str]:
+    """gh_issue_comments の gh コマンド引数を組み立てる"""
+    return ["issue", "view", str(number), "--repo", repo, "--json", "comments"]
+
+
+def run_gh_tool(args: List[str], error_label: str) -> List[Dict[str, Any]]:
+    """gh コマンドを実行し、結果を MCP content 形式で返す"""
     stdout, stderr, code = execute_gh_command(args)
 
     if code != 0:
-        raise ToolExecutionError(f"gh issue list failed: {stderr}")
+        raise ToolExecutionError(f"{error_label}: {stderr}")
 
     return [{"type": "text", "text": stdout}]
+
+
+def execute_gh_repo_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_repo_view ツールの実行"""
+    return run_gh_tool(build_gh_repo_view_args(repo), "gh repo view failed")
+
+
+def execute_gh_pr_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_pr_list ツールの実行"""
+    return run_gh_tool(build_gh_pr_list_args(repo, arguments), "gh pr list failed")
+
+
+def execute_gh_pr_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_pr_view ツールの実行"""
+    return run_gh_tool(build_gh_pr_view_args(repo, arguments["number"]), "gh pr view failed")
+
+
+def execute_gh_issue_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_issue_list ツールの実行"""
+    return run_gh_tool(build_gh_issue_list_args(repo, arguments), "gh issue list failed")
 
 
 def execute_gh_issue_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_issue_view ツールの実行"""
-    number = arguments["number"]
-    args = ["issue", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt"]
-
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh issue view failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+    return run_gh_tool(build_gh_issue_view_args(repo, arguments["number"]), "gh issue view failed")
 
 
 def execute_gh_pr_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_pr_comments ツールの実行"""
-    number = arguments["number"]
-    args = ["pr", "view", str(number), "--repo", repo, "--json", "comments"]
-
-    stdout, stderr, code = execute_gh_command(args)
-
-    if code != 0:
-        raise ToolExecutionError(f"gh pr view failed: {stderr}")
-
-    return [{"type": "text", "text": stdout}]
+    return run_gh_tool(build_gh_pr_comments_args(repo, arguments["number"]), "gh pr view failed")
 
 
 def execute_gh_issue_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_issue_comments ツールの実行"""
-    number = arguments["number"]
-    args = ["issue", "view", str(number), "--repo", repo, "--json", "comments"]
+    return run_gh_tool(build_gh_issue_comments_args(repo, arguments["number"]), "gh issue view failed")
 
-    stdout, stderr, code = execute_gh_command(args)
+
+def build_gh_default_branch_args(repo: str) -> List[str]:
+    """デフォルトブランチ取得の gh コマンド引数を組み立てる"""
+    return ["api", f"repos/{repo}", "--jq", ".default_branch"]
+
+
+def build_gh_pr_create_args(repo: str, branch: str, title: str, body: str, base: str) -> List[str]:
+    """gh_pr_create の gh コマンド引数を組み立てる"""
+    return [
+        "api", f"repos/{repo}/pulls",
+        "-f", f"title={title}",
+        "-f", f"head={branch}",
+        "-f", f"base={base}",
+        "-f", f"body={body}",
+    ]
+
+
+def resolve_default_branch(repo: str) -> str:
+    """リポジトリのデフォルトブランチ名を取得する"""
+    stdout, stderr, code = execute_gh_command(build_gh_default_branch_args(repo))
 
     if code != 0:
-        raise ToolExecutionError(f"gh issue view failed: {stderr}")
+        raise ToolExecutionError(f"デフォルトブランチの取得に失敗しました: {stderr}")
 
-    return [{"type": "text", "text": stdout}]
+    default_branch = stdout.strip()
+    if not default_branch:
+        raise ToolExecutionError("デフォルトブランチを解決できませんでした")
+
+    return default_branch
+
+
+def execute_gh_pr_create(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_pr_create ツールの実行"""
+    branch = arguments["branch"]
+    validate_branch_name(branch, "branch")
+
+    if "base" in arguments:
+        base = arguments["base"]
+        validate_branch_name(base, "base")
+    else:
+        base = resolve_default_branch(repo)
+
+    args = build_gh_pr_create_args(repo, branch, arguments["title"], arguments["body"], base)
+    return run_gh_tool(args, "gh pr create failed")
+
+
+def build_git_push_args(path: str, branch: str) -> List[str]:
+    """git_push の git コマンド引数を組み立てる"""
+    return ["-C", path, "push", "origin", branch]
+
+
+def build_gh_local_default_branch_args() -> List[str]:
+    """カレントリポジトリのデフォルトブランチ取得の gh コマンド引数を組み立てる"""
+    return ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
+
+
+def validate_branch_is_not_default(branch: str, default_branch: str) -> None:
+    """push 対象ブランチがデフォルトブランチでないことを検証"""
+    if branch == default_branch:
+        raise ValidationError(
+            f"デフォルトブランチ ({default_branch}) への push は許可されていません"
+        )
+
+
+def resolve_local_repo_default_branch(path: str) -> str:
+    """
+    path のリポジトリのデフォルトブランチ名を gh で取得する
+
+    デフォルトブランチへの push を確実に防ぐため、判定できない場合は
+    例外を送出して push を拒否する (fail-closed)。
+    """
+    stdout, stderr, code = execute_gh_command(build_gh_local_default_branch_args(), cwd=path)
+
+    if code != 0:
+        raise ToolExecutionError(
+            f"デフォルトブランチの取得に失敗したため push を拒否しました: {stderr}"
+        )
+
+    default_branch = stdout.strip()
+    if not default_branch:
+        raise ToolExecutionError("デフォルトブランチを解決できなかったため push を拒否しました")
+
+    return default_branch
+
+
+def execute_git_push(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """git_push ツールの実行"""
+    path = arguments["path"]
+    branch = arguments["branch"]
+
+    validate_repository_path(path)
+    validate_branch_name(branch, "branch")
+    validate_branch_is_not_default(branch, resolve_local_repo_default_branch(path))
+
+    stdout, stderr, code = execute_git_command(build_git_push_args(path, branch))
+
+    if code != 0:
+        raise ToolExecutionError(f"git push failed: {stderr}")
+
+    # git push は進捗や結果を stderr に出力するため、stdout が空の場合は stderr を返す
+    output = stdout if stdout.strip() else stderr
+    return [{"type": "text", "text": output}]
+
+
+# owner/repository_name を引数に取るツールの実行関数
+# 実行関数は (repo, arguments) を受け取る
+REPO_TOOL_EXECUTORS = {
+    "gh_repo_view": execute_gh_repo_view,
+    "gh_pr_list": execute_gh_pr_list,
+    "gh_pr_view": execute_gh_pr_view,
+    "gh_issue_list": execute_gh_issue_list,
+    "gh_issue_view": execute_gh_issue_view,
+    "gh_pr_comments": execute_gh_pr_comments,
+    "gh_issue_comments": execute_gh_issue_comments,
+    "gh_pr_create": execute_gh_pr_create,
+}
 
 
 def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -458,26 +688,15 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, An
     Returns:
         MCP content 形式の結果リスト
     """
-    owner = arguments["owner"]
-    repo_name = arguments["repository_name"]
-    repo = f"{owner}/{repo_name}"
+    if tool_name == "git_push":
+        return execute_git_push(arguments)
 
-    if tool_name == "gh_repo_view":
-        return execute_gh_repo_view(repo, arguments)
-    elif tool_name == "gh_pr_list":
-        return execute_gh_pr_list(repo, arguments)
-    elif tool_name == "gh_pr_view":
-        return execute_gh_pr_view(repo, arguments)
-    elif tool_name == "gh_issue_list":
-        return execute_gh_issue_list(repo, arguments)
-    elif tool_name == "gh_issue_view":
-        return execute_gh_issue_view(repo, arguments)
-    elif tool_name == "gh_pr_comments":
-        return execute_gh_pr_comments(repo, arguments)
-    elif tool_name == "gh_issue_comments":
-        return execute_gh_issue_comments(repo, arguments)
-    else:
+    executor = REPO_TOOL_EXECUTORS.get(tool_name)
+    if executor is None:
         raise ValidationError(f"未知のツール: {tool_name}")
+
+    repo = f"{arguments['owner']}/{arguments['repository_name']}"
+    return executor(repo, arguments)
 
 
 def handle_initialize(params: Dict[str, Any]) -> Dict[str, Any]:
