@@ -136,6 +136,27 @@ class 設定ファイル読み込みテスト(unittest.TestCase):
                 servers[0].headers_helper, "/opt/bin/get-headers.sh"
             )
 
+    def test_headers_helperありでheadersなしのheader認証設定を読み込める(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_yaml(Path(tmp), """\
+                mcp-servers:
+                  dynamic-auth:
+                    endpoint: https://dynamic.example.com/mcp/
+                    type: http
+                    auth:
+                      type: header
+                    headers-helper: /opt/bin/get-headers.sh
+            """)
+            servers = mcp_proxy.load_config(config_path)
+
+            self.assertEqual(len(servers), 1)
+            self.assertIsInstance(servers[0].auth, mcp_proxy.AuthHeader)
+            self.assertEqual(servers[0].auth.headers, {})
+            self.assertEqual(
+                servers[0].headers_helper, "/opt/bin/get-headers.sh"
+            )
+
     def test_headers_helper未指定の場合はNoneになる(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
@@ -270,6 +291,26 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
         headers = mcp_proxy.build_upstream_headers(server, {}, helper_headers)
 
         self.assertEqual(headers["Authorization"], "from-helper")
+
+    def test_ヘッダー空のheader認証でhelperヘッダーのみが構築される(self):
+        server = mcp_proxy.UpstreamServer(
+            key="test",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            auth=mcp_proxy.AuthHeader(headers={}),
+            headers_helper="/opt/bin/get-headers.sh",
+        )
+        helper_headers = {"Api-Key": "from-helper"}
+        headers = mcp_proxy.build_upstream_headers(server, {}, helper_headers)
+
+        self.assertEqual(
+            headers,
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Api-Key": "from-helper",
+            },
+        )
 
     def test_helperヘッダーが空の場合は従来のヘッダー構成と同一になる(self):
         server = mcp_proxy.UpstreamServer(
@@ -993,27 +1034,68 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
 class 認証設定パーステスト(unittest.TestCase):
 
     def test_Noneを渡すとNoneが返る(self):
-        self.assertIsNone(mcp_proxy.parse_auth(None))
+        self.assertIsNone(mcp_proxy.parse_auth(None, has_headers_helper=False))
 
     def test_未知の認証タイプでValueErrorが発生する(self):
         with self.assertRaises(ValueError):
-            mcp_proxy.parse_auth({"type": "unknown"})
+            mcp_proxy.parse_auth({"type": "unknown"}, has_headers_helper=False)
 
     def test_bearerでtokenが未指定だとValueErrorが発生する(self):
         with self.assertRaises(ValueError):
-            mcp_proxy.parse_auth({"type": "bearer"})
+            mcp_proxy.parse_auth({"type": "bearer"}, has_headers_helper=False)
 
-    def test_headerでheadersが未指定だとValueErrorが発生する(self):
+    def test_headers_helperなしでheadersが未指定だとValueErrorが発生する(self):
         with self.assertRaises(ValueError):
-            mcp_proxy.parse_auth({"type": "header"})
+            mcp_proxy.parse_auth({"type": "header"}, has_headers_helper=False)
 
-    def test_headerでheadersが辞書でないとValueErrorが発生する(self):
+    def test_headers_helperなしでheadersが辞書でないとValueErrorが発生する(self):
         with self.assertRaises(ValueError):
-            mcp_proxy.parse_auth({"type": "header", "headers": "not-a-dict"})
+            mcp_proxy.parse_auth(
+                {"type": "header", "headers": "not-a-dict"},
+                has_headers_helper=False,
+            )
 
-    def test_headerでheadersが空辞書だとValueErrorが発生する(self):
+    def test_headers_helperなしでheadersが空辞書だとValueErrorが発生する(self):
         with self.assertRaises(ValueError):
-            mcp_proxy.parse_auth({"type": "header", "headers": {}})
+            mcp_proxy.parse_auth(
+                {"type": "header", "headers": {}}, has_headers_helper=False
+            )
+
+    def test_headers_helperありでheadersが未指定だとヘッダー空のAuthHeaderが返る(self):
+        auth = mcp_proxy.parse_auth({"type": "header"}, has_headers_helper=True)
+
+        self.assertIsInstance(auth, mcp_proxy.AuthHeader)
+        self.assertEqual(auth.headers, {})
+
+    def test_headers_helperありでheadersが空辞書だとヘッダー空のAuthHeaderが返る(self):
+        auth = mcp_proxy.parse_auth(
+            {"type": "header", "headers": {}}, has_headers_helper=True
+        )
+
+        self.assertIsInstance(auth, mcp_proxy.AuthHeader)
+        self.assertEqual(auth.headers, {})
+
+    def test_headers_helperありでもheadersが辞書でないとValueErrorが発生する(self):
+        with self.assertRaises(ValueError):
+            mcp_proxy.parse_auth(
+                {"type": "header", "headers": "not-a-dict"},
+                has_headers_helper=True,
+            )
+
+    def test_headers_helperありでもheadersが空文字列だとValueErrorが発生する(self):
+        with self.assertRaises(ValueError):
+            mcp_proxy.parse_auth(
+                {"type": "header", "headers": ""}, has_headers_helper=True
+            )
+
+    def test_headers_helperありでheadersが非空辞書だとその辞書のAuthHeaderが返る(self):
+        auth = mcp_proxy.parse_auth(
+            {"type": "header", "headers": {"Api-Key": "NRAK-xxx"}},
+            has_headers_helper=True,
+        )
+
+        self.assertIsInstance(auth, mcp_proxy.AuthHeader)
+        self.assertEqual(auth.headers, {"Api-Key": "NRAK-xxx"})
 
 
 if __name__ == "__main__":

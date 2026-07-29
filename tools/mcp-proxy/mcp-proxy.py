@@ -56,8 +56,15 @@ class UpstreamServer:
     headers_helper: Optional[str] = None
 
 
-def parse_auth(auth_config: Optional[Dict[str, Any]]) -> Optional[Union[AuthBearer, AuthHeader]]:
-    """認証設定をパースする"""
+def parse_auth(
+    auth_config: Optional[Dict[str, Any]],
+    has_headers_helper: bool,
+) -> Optional[Union[AuthBearer, AuthHeader]]:
+    """認証設定をパースする
+
+    headers-helperが指定されているサーバーでは、動的ヘッダーで認証する
+    構成を許容するため、header認証のheaders省略を認める。
+    """
     if auth_config is None:
         return None
 
@@ -70,9 +77,13 @@ def parse_auth(auth_config: Optional[Dict[str, Any]]) -> Optional[Union[AuthBear
 
     if auth_type == "header":
         headers = auth_config.get("headers")
-        if not headers or not isinstance(headers, dict):
-            raise ValueError("header認証にはheaders（辞書）が必要です")
-        return AuthHeader(headers=headers)
+        if headers is not None and not isinstance(headers, dict):
+            raise ValueError("header認証のheadersは辞書である必要があります")
+        if not headers and not has_headers_helper:
+            raise ValueError(
+                "header認証にはheaders（辞書）またはheaders-helperが必要です"
+            )
+        return AuthHeader(headers=headers or {})
 
     raise ValueError(f"未知の認証タイプ: {auth_type}")
 
@@ -120,7 +131,9 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
             )
             continue
 
-        auth = parse_auth(conf.get("auth"))
+        auth = parse_auth(
+            conf.get("auth"), has_headers_helper=headers_helper is not None
+        )
         allow_tools = conf.get("allow-tools", [])
         deny_tools = conf.get("deny-tools", [])
         servers.append(
