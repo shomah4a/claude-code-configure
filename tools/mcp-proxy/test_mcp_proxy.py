@@ -119,6 +119,56 @@ class 設定ファイル読み込みテスト(unittest.TestCase):
             self.assertEqual(len(servers), 1)
             self.assertEqual(servers[0].key, "http-server")
 
+    def test_headers_helper付きの設定を読み込める(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_yaml(Path(tmp), """\
+                mcp-servers:
+                  dynamic:
+                    endpoint: https://dynamic.example.com/mcp/
+                    type: http
+                    headers-helper: /opt/bin/get-headers.sh
+            """)
+            servers = mcp_proxy.load_config(config_path)
+
+            self.assertEqual(len(servers), 1)
+            self.assertEqual(
+                servers[0].headers_helper, "/opt/bin/get-headers.sh"
+            )
+
+    def test_headers_helper未指定の場合はNoneになる(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_yaml(Path(tmp), """\
+                mcp-servers:
+                  plain:
+                    endpoint: https://plain.example.com/mcp/
+                    type: http
+            """)
+            servers = mcp_proxy.load_config(config_path)
+
+            self.assertIsNone(servers[0].headers_helper)
+
+    def test_headers_helperが文字列でないサーバーはスキップされる(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_yaml(Path(tmp), """\
+                mcp-servers:
+                  broken:
+                    endpoint: https://broken.example.com/mcp/
+                    type: http
+                    headers-helper:
+                      - not
+                      - a-string
+                  valid:
+                    endpoint: https://valid.example.com/mcp/
+                    type: http
+            """)
+            servers = mcp_proxy.load_config(config_path)
+
+            self.assertEqual(len(servers), 1)
+            self.assertEqual(servers[0].key, "valid")
+
     def test_存在しない設定ファイルは空リストを返す(self):
         servers = mcp_proxy.load_config(Path("/nonexistent/config.yaml"))
         self.assertEqual(servers, [])
@@ -149,7 +199,7 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
             transport_type="http",
             auth=mcp_proxy.AuthBearer(token="my-token"),
         )
-        headers = mcp_proxy.build_upstream_headers(server, {})
+        headers = mcp_proxy.build_upstream_headers(server, {}, {})
 
         self.assertEqual(headers["Authorization"], "Bearer my-token")
         self.assertEqual(headers["Content-Type"], "application/json")
@@ -164,7 +214,7 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
                 "Account-Id": "12345",
             }),
         )
-        headers = mcp_proxy.build_upstream_headers(server, {})
+        headers = mcp_proxy.build_upstream_headers(server, {}, {})
 
         self.assertEqual(headers["Api-Key"], "NRAK-xxx")
         self.assertEqual(headers["Account-Id"], "12345")
@@ -178,7 +228,7 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
             auth=None,
         )
         client_headers = {"X-Request-Id": "req-001"}
-        headers = mcp_proxy.build_upstream_headers(server, client_headers)
+        headers = mcp_proxy.build_upstream_headers(server, client_headers, {})
 
         self.assertEqual(headers["X-Request-Id"], "req-001")
         self.assertEqual(headers["Content-Type"], "application/json")
@@ -191,7 +241,7 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
             auth=mcp_proxy.AuthHeader(headers={"Authorization": "from-yaml"}),
         )
         client_headers = {"Authorization": "from-client"}
-        headers = mcp_proxy.build_upstream_headers(server, client_headers)
+        headers = mcp_proxy.build_upstream_headers(server, client_headers, {})
 
         self.assertEqual(headers["Authorization"], "from-yaml")
 
@@ -202,12 +252,218 @@ class 認証ヘッダー構築テスト(unittest.TestCase):
             transport_type="http",
             auth=None,
         )
-        headers = mcp_proxy.build_upstream_headers(server, {})
+        headers = mcp_proxy.build_upstream_headers(server, {}, {})
 
         self.assertEqual(
             headers,
             {"Content-Type": "application/json", "Accept": "application/json"},
         )
+
+    def test_helperヘッダーがYAML認証ヘッダーより優先される(self):
+        server = mcp_proxy.UpstreamServer(
+            key="test",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            auth=mcp_proxy.AuthHeader(headers={"Authorization": "from-yaml"}),
+        )
+        helper_headers = {"Authorization": "from-helper"}
+        headers = mcp_proxy.build_upstream_headers(server, {}, helper_headers)
+
+        self.assertEqual(headers["Authorization"], "from-helper")
+
+    def test_helperヘッダーが空の場合は従来のヘッダー構成と同一になる(self):
+        server = mcp_proxy.UpstreamServer(
+            key="test",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            auth=mcp_proxy.AuthBearer(token="my-token"),
+        )
+        client_headers = {"X-Request-Id": "req-001"}
+        headers = mcp_proxy.build_upstream_headers(server, client_headers, {})
+
+        self.assertEqual(
+            headers,
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "X-Request-Id": "req-001",
+                "Authorization": "Bearer my-token",
+            },
+        )
+
+
+class ヘルパー出力パーステスト(unittest.TestCase):
+
+    def test_文字列キーバリューのJSONオブジェクトをヘッダー辞書に変換できる(self):
+        output = '{"Authorization": "Bearer xxx", "Api-Key": "NRAK-yyy"}'
+        headers = mcp_proxy.parse_headers_helper_output(output)
+
+        self.assertEqual(
+            headers,
+            {"Authorization": "Bearer xxx", "Api-Key": "NRAK-yyy"},
+        )
+
+    def test_空のJSONオブジェクトは空辞書になる(self):
+        self.assertEqual(mcp_proxy.parse_headers_helper_output("{}"), {})
+
+    def test_JSONでない出力はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output("not-json")
+
+    def test_JSON配列の出力はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output('["a", "b"]')
+
+    def test_文字列でないヘッダー値はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output('{"Account-Id": 12345}')
+
+    def test_token文字以外を含むヘッダー名はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output('{"Bad Header": "v"}')
+
+    def test_改行を含むヘッダー値はHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.parse_headers_helper_output(
+                '{"Authorization": "a\\r\\nX-Injected: b"}'
+            )
+
+
+class ヘルパーコマンド実行テスト(unittest.TestCase):
+
+    def test_JSONオブジェクトを出力するコマンドからヘッダーを取得できる(self):
+        command = """echo '{"Authorization": "Bearer from-helper"}'"""
+        headers = mcp_proxy.run_headers_helper(command, timeout_sec=5)
+
+        self.assertEqual(headers, {"Authorization": "Bearer from-helper"})
+
+    def test_非0で終了するコマンドはHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.run_headers_helper("echo ng >&2; exit 3", timeout_sec=5)
+
+    def test_タイムアウトを超えるコマンドはHeadersHelperErrorになる(self):
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            mcp_proxy.run_headers_helper("sleep 5", timeout_sec=1)
+
+
+class ヘルパーキャッシュテスト(unittest.TestCase):
+
+    def _server_with_helper(self, key: str = "cached") -> mcp_proxy.UpstreamServer:
+        return mcp_proxy.UpstreamServer(
+            key=key,
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+            headers_helper="/opt/bin/get-headers.sh",
+        )
+
+    def _make_cache(
+        self,
+        run_results: List[Dict[str, str]],
+        clock: List[float],
+        ttl_sec: float = 300.0,
+    ) -> "Tuple[mcp_proxy.HeadersHelperCache, List[str]]":
+        """fakeのrunnerとclockを注入したキャッシュを構築する
+
+        run_results: runner呼び出しごとに順に返す結果
+        clock: 現在時刻を保持する1要素リスト (テスト側で書き換えて時間を進める)
+        """
+        calls: List[str] = []
+
+        def fake_runner(command: str, timeout_sec: int) -> Dict[str, str]:
+            calls.append(command)
+            return run_results[len(calls) - 1]
+
+        cache = mcp_proxy.HeadersHelperCache(
+            runner=fake_runner,
+            ttl_sec=ttl_sec,
+            now_func=lambda: clock[0],
+        )
+        return cache, calls
+
+    def test_helper未設定のサーバーはrunnerを実行せず空辞書を返す(self):
+        server = mcp_proxy.UpstreamServer(
+            key="plain",
+            endpoint="https://example.com/mcp/",
+            transport_type="http",
+        )
+        cache, calls = self._make_cache([], clock=[0.0])
+
+        self.assertEqual(cache.get(server), {})
+        self.assertEqual(calls, [])
+
+    def test_初回取得時にrunnerが実行される(self):
+        clock = [0.0]
+        cache, calls = self._make_cache(
+            [{"Authorization": "Bearer t1"}], clock
+        )
+
+        headers = cache.get(self._server_with_helper())
+
+        self.assertEqual(headers, {"Authorization": "Bearer t1"})
+        self.assertEqual(calls, ["/opt/bin/get-headers.sh"])
+
+    def test_TTL内の再取得ではrunnerが再実行されない(self):
+        clock = [0.0]
+        cache, calls = self._make_cache(
+            [{"Authorization": "Bearer t1"}], clock, ttl_sec=300.0
+        )
+        server = self._server_with_helper()
+
+        cache.get(server)
+        clock[0] = 299.0
+        headers = cache.get(server)
+
+        self.assertEqual(headers, {"Authorization": "Bearer t1"})
+        self.assertEqual(len(calls), 1)
+
+    def test_TTL経過後の取得ではrunnerが再実行される(self):
+        clock = [0.0]
+        cache, calls = self._make_cache(
+            [{"Authorization": "Bearer t1"}, {"Authorization": "Bearer t2"}],
+            clock,
+            ttl_sec=300.0,
+        )
+        server = self._server_with_helper()
+
+        cache.get(server)
+        clock[0] = 300.0
+        headers = cache.get(server)
+
+        self.assertEqual(headers, {"Authorization": "Bearer t2"})
+        self.assertEqual(len(calls), 2)
+
+    def test_サーバーごとに独立してキャッシュされる(self):
+        clock = [0.0]
+        cache, calls = self._make_cache(
+            [{"A": "1"}, {"B": "2"}], clock
+        )
+
+        headers1 = cache.get(self._server_with_helper(key="server1"))
+        headers2 = cache.get(self._server_with_helper(key="server2"))
+
+        self.assertEqual(headers1, {"A": "1"})
+        self.assertEqual(headers2, {"B": "2"})
+        self.assertEqual(len(calls), 2)
+
+    def test_runnerの例外はキャッシュされず呼び出し元に伝播する(self):
+        calls: List[str] = []
+
+        def failing_runner(command: str, timeout_sec: int) -> Dict[str, str]:
+            calls.append(command)
+            raise mcp_proxy.HeadersHelperError("failed")
+
+        cache = mcp_proxy.HeadersHelperCache(
+            runner=failing_runner,
+            ttl_sec=300.0,
+            now_func=lambda: 0.0,
+        )
+        server = self._server_with_helper()
+
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            cache.get(server)
+        with self.assertRaises(mcp_proxy.HeadersHelperError):
+            cache.get(server)
+        self.assertEqual(len(calls), 2)
 
 
 class パスルーティングテスト(unittest.TestCase):
@@ -298,8 +554,14 @@ class _ResponseCapture:
         self.headers = headers
 
 
+def _no_helper_headers(server: mcp_proxy.UpstreamServer) -> Dict[str, str]:
+    """helperを使わないテスト用のダミー実装"""
+    return {}
+
+
 def _make_app(
     forward_func: Callable = None,
+    helper_headers_func: Callable = _no_helper_headers,
 ) -> mcp_proxy.McpProxyApp:
     """テスト用のMcpProxyAppを構築する"""
     servers = [
@@ -310,8 +572,13 @@ def _make_app(
         ),
     ]
     if forward_func is None:
-        forward_func = lambda server, body, timeout, headers: b'{"jsonrpc":"2.0","id":1,"result":{}}'
-    return mcp_proxy.McpProxyApp(servers, 30, forward_func=forward_func)
+        forward_func = lambda server, body, timeout, headers, helper_headers: b'{"jsonrpc":"2.0","id":1,"result":{}}'
+    return mcp_proxy.McpProxyApp(
+        servers,
+        30,
+        forward_func=forward_func,
+        helper_headers_func=helper_headers_func,
+    )
 
 
 class WSGIハンドラテスト(unittest.TestCase):
@@ -348,7 +615,7 @@ class WSGIハンドラテスト(unittest.TestCase):
     def test_正常なリクエストは上流のレスポンスをそのまま返す(self):
         upstream_response = b'{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}'
 
-        def fake_forward(server, body, timeout, headers):
+        def fake_forward(server, body, timeout, headers, helper_headers):
             return upstream_response
 
         app = _make_app(forward_func=fake_forward)
@@ -364,7 +631,7 @@ class WSGIハンドラテスト(unittest.TestCase):
     def test_転送関数にサーバー情報とリクエストボディが渡される(self):
         received = {}
 
-        def capturing_forward(server, body, timeout, headers):
+        def capturing_forward(server, body, timeout, headers, helper_headers):
             received["server_key"] = server.key
             received["body"] = body
             received["timeout"] = timeout
@@ -382,7 +649,7 @@ class WSGIハンドラテスト(unittest.TestCase):
         self.assertEqual(received["timeout"], 30)
 
     def test_上流HTTPError時は502とJSON_RPCエラーを返す(self):
-        def error_forward(server, body, timeout, headers):
+        def error_forward(server, body, timeout, headers, helper_headers):
             raise urllib.error.HTTPError(
                 url="https://test.example.com/mcp/",
                 code=500,
@@ -404,7 +671,7 @@ class WSGIハンドラテスト(unittest.TestCase):
         self.assertIn("500", error_json["error"]["message"])
 
     def test_上流URLError時は502とJSON_RPCエラーを返す(self):
-        def error_forward(server, body, timeout, headers):
+        def error_forward(server, body, timeout, headers, helper_headers):
             raise urllib.error.URLError(reason="Connection refused")
 
         app = _make_app(forward_func=error_forward)
@@ -418,6 +685,97 @@ class WSGIハンドラテスト(unittest.TestCase):
         error_json = json.loads(body[0])
         self.assertEqual(error_json["error"]["code"], -32603)
         self.assertIn("Connection refused", error_json["error"]["message"])
+
+
+class WSGIハンドラヘルパー結線テスト(unittest.TestCase):
+
+    def _make_helper_app(
+        self,
+        helper_headers_func: Callable,
+        forward_func: Callable,
+    ) -> mcp_proxy.McpProxyApp:
+        servers = [
+            mcp_proxy.UpstreamServer(
+                key="test-server",
+                endpoint="https://test.example.com/mcp/",
+                transport_type="http",
+                headers_helper="/opt/bin/get-headers.sh",
+            ),
+        ]
+        return mcp_proxy.McpProxyApp(
+            servers,
+            30,
+            forward_func=forward_func,
+            helper_headers_func=helper_headers_func,
+        )
+
+    def test_helperヘッダーが転送関数に渡される(self):
+        received = {}
+
+        def capturing_forward(server, body, timeout, headers, helper_headers):
+            received["helper_headers"] = helper_headers
+            return b'{"jsonrpc":"2.0","id":1,"result":{}}'
+
+        app = self._make_helper_app(
+            helper_headers_func=lambda server: {"Authorization": "Bearer dyn"},
+            forward_func=capturing_forward,
+        )
+        request_body = b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+        environ = _build_environ(path="/test-server", body=request_body)
+        resp = _ResponseCapture()
+
+        app(environ, resp)
+
+        self.assertEqual(
+            received["helper_headers"], {"Authorization": "Bearer dyn"}
+        )
+
+    def test_helper失敗時は502とJSON_RPCエラーを返し転送しない(self):
+        forwarded = {"called": False}
+
+        def recording_forward(server, body, timeout, headers, helper_headers):
+            forwarded["called"] = True
+            return b'{"jsonrpc":"2.0","id":1,"result":{}}'
+
+        def failing_helper(server):
+            raise mcp_proxy.HeadersHelperError("helper broken")
+
+        app = self._make_helper_app(
+            helper_headers_func=failing_helper,
+            forward_func=recording_forward,
+        )
+        request_body = b'{"jsonrpc":"2.0","id":7,"method":"tools/list"}'
+        environ = _build_environ(path="/test-server", body=request_body)
+        resp = _ResponseCapture()
+
+        body = app(environ, resp)
+
+        self.assertEqual(resp.status, "502 Bad Gateway")
+        self.assertFalse(forwarded["called"])
+        error_json = json.loads(body[0])
+        self.assertEqual(error_json["id"], 7)
+        self.assertEqual(error_json["error"]["code"], -32603)
+        self.assertEqual(
+            error_json["error"]["message"], "headers-helper実行エラー"
+        )
+
+    def test_helper失敗時のエラー詳細はクライアントに返らない(self):
+        def failing_helper(server):
+            raise mcp_proxy.HeadersHelperError(
+                "headers-helperが失敗しました (exit 1): secret-token-in-stderr"
+            )
+
+        app = self._make_helper_app(
+            helper_headers_func=failing_helper,
+            forward_func=lambda s, b, t, h, hh: b'{"jsonrpc":"2.0","id":1,"result":{}}',
+        )
+        request_body = b'{"jsonrpc":"2.0","id":8,"method":"tools/list"}'
+        environ = _build_environ(path="/test-server", body=request_body)
+        resp = _ResponseCapture()
+
+        body = app(environ, resp)
+
+        self.assertNotIn(b"secret-token-in-stderr", body[0])
 
 
 class ツールフィルタリングテスト(unittest.TestCase):
@@ -552,8 +910,13 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
             ),
         ]
         if forward_func is None:
-            forward_func = lambda s, b, t: b'{"jsonrpc":"2.0","id":1,"result":{}}'
-        return mcp_proxy.McpProxyApp(servers, 30, forward_func=forward_func)
+            forward_func = lambda s, b, t, h, hh: b'{"jsonrpc":"2.0","id":1,"result":{}}'
+        return mcp_proxy.McpProxyApp(
+            servers,
+            30,
+            forward_func=forward_func,
+            helper_headers_func=_no_helper_headers,
+        )
 
     def test_拒否されたツールのcallはエラーを返す(self):
         app = self._make_filtered_app(deny_tools=["delete_*"])
@@ -576,7 +939,7 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
     def test_許可されたツールのcallは上流に転送される(self):
         forwarded = {"called": False}
 
-        def fake_forward(server, body, timeout, headers):
+        def fake_forward(server, body, timeout, headers, helper_headers):
             forwarded["called"] = True
             return b'{"jsonrpc":"2.0","id":1,"result":{"content":[]}}'
 
@@ -610,7 +973,7 @@ class WSGIハンドラツールフィルタテスト(unittest.TestCase):
 
         app = self._make_filtered_app(
             deny_tools=["delete_*"],
-            forward_func=lambda s, b, t, h: upstream_response,
+            forward_func=lambda s, b, t, h, hh: upstream_response,
         )
         request_body = json.dumps({
             "jsonrpc": "2.0",

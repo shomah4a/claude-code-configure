@@ -12,11 +12,14 @@ import dataclasses
 import fnmatch
 import json
 import os
+import re
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from wsgiref.simple_server import make_server
 
 import yaml
@@ -25,6 +28,11 @@ import yaml
 PORT = 38247
 TIMEOUT_SEC = 30
 DEFAULT_CONFIG_PATH = Path.home() / ".mcp-proxy.d" / "mcp-servers.yml"
+
+# Claude Codeのheaders helper仕様に合わせたタイムアウト
+# https://code.claude.com/docs/en/mcp.md
+HEADERS_HELPER_TIMEOUT_SEC = 10
+HEADERS_HELPER_CACHE_TTL_SEC = 300
 
 
 @dataclasses.dataclass(frozen=True)
@@ -45,6 +53,7 @@ class UpstreamServer:
     auth: Optional[Union[AuthBearer, AuthHeader]] = None
     allow_tools: List[str] = dataclasses.field(default_factory=list)
     deny_tools: List[str] = dataclasses.field(default_factory=list)
+    headers_helper: Optional[str] = None
 
 
 def parse_auth(auth_config: Optional[Dict[str, Any]]) -> Optional[Union[AuthBearer, AuthHeader]]:
@@ -103,6 +112,14 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
             )
             continue
 
+        headers_helper = conf.get("headers-helper")
+        if headers_helper is not None and not isinstance(headers_helper, str):
+            print(
+                f"サーバー '{key}' のheaders-helperは文字列である必要があります。スキップします",
+                file=sys.stderr,
+            )
+            continue
+
         auth = parse_auth(conf.get("auth"))
         allow_tools = conf.get("allow-tools", [])
         deny_tools = conf.get("deny-tools", [])
@@ -114,6 +131,7 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
                 auth=auth,
                 allow_tools=allow_tools,
                 deny_tools=deny_tools,
+                headers_helper=headers_helper,
             )
         )
 
@@ -190,9 +208,120 @@ def extract_client_headers(environ: Dict[str, Any]) -> Dict[str, str]:
     return headers
 
 
+# RFC 7230のtoken文字。上流へのヘッダーインジェクションを防ぐため
+# helper出力のヘッダー名をこの文字集合に限定する
+_HEADER_NAME_TOKEN_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_HEADER_VALUE_FORBIDDEN_RE = re.compile(r"[\r\n\0]")
+
+
+class HeadersHelperError(Exception):
+    """headers-helperコマンドの実行または出力検証の失敗"""
+
+
+def parse_headers_helper_output(output: str) -> Dict[str, str]:
+    """headers-helperコマンドのstdoutを検証し、ヘッダー辞書に変換する
+
+    契約: 文字列key-valueのJSONオブジェクト。
+    ヘッダー名はRFC 7230 token文字のみ、値に制御文字を含む場合は拒否する。
+    """
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError as e:
+        raise HeadersHelperError(
+            f"headers-helperの出力がJSONではありません: {e}"
+        ) from e
+
+    if not isinstance(data, dict):
+        raise HeadersHelperError(
+            "headers-helperの出力はJSONオブジェクトである必要があります"
+        )
+
+    headers = {}
+    for name, value in data.items():
+        if not isinstance(value, str):
+            raise HeadersHelperError(
+                f"ヘッダー値が文字列ではありません: {name}"
+            )
+        if not _HEADER_NAME_TOKEN_RE.match(name):
+            raise HeadersHelperError(f"不正なヘッダー名です: {name!r}")
+        if _HEADER_VALUE_FORBIDDEN_RE.search(value):
+            raise HeadersHelperError(
+                f"ヘッダー値に制御文字が含まれています: {name}"
+            )
+        headers[name] = value
+    return headers
+
+
+def run_headers_helper(command: str, timeout_sec: int) -> Dict[str, str]:
+    """headers-helperコマンドをシェルで実行し、動的ヘッダーの辞書を返す
+
+    コマンド文字列は設定ファイル由来の静的な値のみを渡すこと。
+    リクエスト由来のデータを補間してはならない (シェルインジェクション防止)。
+    """
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise HeadersHelperError(
+            f"headers-helperがタイムアウトしました ({timeout_sec}秒)"
+        ) from e
+
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise HeadersHelperError(
+            f"headers-helperが失敗しました (exit {result.returncode}): {stderr}"
+        )
+
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    return parse_headers_helper_output(stdout)
+
+
+HelperRunner = Callable[[str, int], Dict[str, str]]
+
+
+class HeadersHelperCache:
+    """headers-helperの実行結果をサーバー単位でTTLキャッシュする
+
+    副作用の外部化のため、helper実行関数と現在時刻取得関数
+    (monotonic clock想定、秒単位) はコンストラクタで注入する。
+    """
+
+    def __init__(
+        self,
+        runner: HelperRunner,
+        ttl_sec: float,
+        now_func: Callable[[], float],
+    ):
+        self._runner = runner
+        self._ttl_sec = ttl_sec
+        self._now = now_func
+        self._entries: Dict[str, Tuple[float, Dict[str, str]]] = {}
+
+    def get(self, server: UpstreamServer) -> Dict[str, str]:
+        """サーバーの動的ヘッダーを返す。TTL内はキャッシュを利用する"""
+        if server.headers_helper is None:
+            return {}
+
+        now = self._now()
+        entry = self._entries.get(server.key)
+        if entry is not None and now < entry[0]:
+            return entry[1]
+
+        headers = self._runner(
+            server.headers_helper, HEADERS_HELPER_TIMEOUT_SEC
+        )
+        self._entries[server.key] = (now + self._ttl_sec, headers)
+        return headers
+
+
 def build_upstream_headers(
     server: UpstreamServer,
     client_headers: Dict[str, str],
+    helper_headers: Dict[str, str],
 ) -> Dict[str, str]:
     """上流サーバーへのリクエストに付与するヘッダーを構築する
 
@@ -200,6 +329,7 @@ def build_upstream_headers(
     1. プロキシのデフォルト (Content-Type, Accept)
     2. クライアントからのパススルーヘッダー
     3. YAML認証ヘッダー
+    4. headers-helperによる動的ヘッダー
     """
     headers = {
         "Content-Type": "application/json",
@@ -213,6 +343,8 @@ def build_upstream_headers(
     elif isinstance(server.auth, AuthHeader):
         headers.update(server.auth.headers)
 
+    headers.update(helper_headers)
+
     return headers
 
 
@@ -221,9 +353,10 @@ def forward_request(
     request_body: bytes,
     timeout_sec: int,
     client_headers: Dict[str, str],
+    helper_headers: Dict[str, str],
 ) -> bytes:
     """リクエストを上流サーバーに転送し、レスポンスを返す"""
-    headers = build_upstream_headers(server, client_headers)
+    headers = build_upstream_headers(server, client_headers, helper_headers)
     req = urllib.request.Request(
         server.endpoint,
         data=request_body,
@@ -254,7 +387,10 @@ def generate_mcp_json(servers: List[UpstreamServer]) -> str:
     return json.dumps({"mcpServers": mcp_servers}, indent=2, ensure_ascii=False)
 
 
-ForwardFunc = Callable[[UpstreamServer, bytes, int, Dict[str, str]], bytes]
+ForwardFunc = Callable[
+    [UpstreamServer, bytes, int, Dict[str, str], Dict[str, str]], bytes
+]
+HelperHeadersFunc = Callable[[UpstreamServer], Dict[str, str]]
 
 
 class McpProxyApp:
@@ -265,10 +401,13 @@ class McpProxyApp:
         servers: List[UpstreamServer],
         timeout_sec: int,
         forward_func: ForwardFunc = forward_request,
+        *,
+        helper_headers_func: HelperHeadersFunc,
     ):
         self._servers = {s.key: s for s in servers}
         self._timeout_sec = timeout_sec
         self._forward = forward_func
+        self._helper_headers = helper_headers_func
 
     def __call__(
         self, environ: Dict[str, Any], start_response
@@ -328,6 +467,30 @@ class McpProxyApp:
 
         client_headers = extract_client_headers(environ)
 
+        try:
+            helper_headers = self._helper_headers(server)
+        except HeadersHelperError as e:
+            # 詳細 (stderrや出力断片) は秘匿情報を含み得るため
+            # サーバー側ログのみに出力し、クライアントには固定文言を返す
+            print(
+                f"[{server.key}] headers-helperエラー: {e}",
+                file=sys.stderr,
+            )
+            start_response(
+                "502 Bad Gateway", [("Content-Type", "application/json")]
+            )
+            error_response = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32603,
+                        "message": "headers-helper実行エラー",
+                    },
+                }
+            )
+            return [error_response.encode("utf-8")]
+
         print(
             f"[{server.key}] 転送: {server.endpoint}",
             file=sys.stderr,
@@ -335,7 +498,11 @@ class McpProxyApp:
 
         try:
             response_body = self._forward(
-                server, request_body, self._timeout_sec, client_headers
+                server,
+                request_body,
+                self._timeout_sec,
+                client_headers,
+                helper_headers,
             )
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace")
@@ -417,7 +584,14 @@ def main() -> int:
         print(generate_mcp_json(servers))
         return 0
 
-    app = McpProxyApp(servers, TIMEOUT_SEC)
+    helper_cache = HeadersHelperCache(
+        runner=run_headers_helper,
+        ttl_sec=HEADERS_HELPER_CACHE_TTL_SEC,
+        now_func=time.monotonic,
+    )
+    app = McpProxyApp(
+        servers, TIMEOUT_SEC, helper_headers_func=helper_cache.get
+    )
 
     print(f"MCP Proxy Server", file=sys.stderr)
     print(f"Port: {PORT}", file=sys.stderr)
