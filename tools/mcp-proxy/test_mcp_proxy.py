@@ -223,6 +223,10 @@ class 設定ファイル読み込みテスト(unittest.TestCase):
                     type: http
                     auth:
                       type: unknown
+                  string-auth:
+                    endpoint: https://string.example.com/mcp/
+                    type: http
+                    auth: bearer
                   valid:
                     endpoint: https://valid.example.com/mcp/
                     type: http
@@ -1077,6 +1081,10 @@ class 認証設定パーステスト(unittest.TestCase):
 
     def test_Noneを渡すとNoneが返る(self):
         self.assertIsNone(mcp_proxy.parse_auth(None, has_headers_helper=False))
+
+    def test_authが辞書でないとValueErrorが発生する(self):
+        with self.assertRaises(ValueError):
+            mcp_proxy.parse_auth("bearer", has_headers_helper=False)
 
     def test_未知の認証タイプでValueErrorが発生する(self):
         with self.assertRaises(ValueError):

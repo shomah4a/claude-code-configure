@@ -68,6 +68,9 @@ def parse_auth(
     if auth_config is None:
         return None
 
+    if not isinstance(auth_config, dict):
+        raise ValueError("authは辞書である必要があります")
+
     auth_type = auth_config.get("type")
     if auth_type == "bearer":
         token = auth_config.get("token")
