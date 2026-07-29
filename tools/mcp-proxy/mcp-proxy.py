@@ -133,9 +133,16 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
             )
             continue
 
-        auth = parse_auth(
-            conf.get("auth"), has_headers_helper=headers_helper is not None
-        )
+        try:
+            auth = parse_auth(
+                conf.get("auth"), has_headers_helper=headers_helper is not None
+            )
+        except ValueError as e:
+            print(
+                f"サーバー '{key}' の認証設定が不正です: {e}。スキップします",
+                file=sys.stderr,
+            )
+            continue
         allow_tools = conf.get("allow-tools", [])
         deny_tools = conf.get("deny-tools", [])
         servers.append(

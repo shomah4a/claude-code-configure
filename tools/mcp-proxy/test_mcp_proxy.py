@@ -208,6 +208,30 @@ class 設定ファイル読み込みテスト(unittest.TestCase):
             self.assertEqual(len(servers), 1)
             self.assertEqual(servers[0].key, "valid")
 
+    def test_auth設定が不正なサーバーはスキップされる(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_yaml(Path(tmp), """\
+                mcp-servers:
+                  broken-auth:
+                    endpoint: https://broken.example.com/mcp/
+                    type: http
+                    auth:
+                      type: header
+                  unknown-auth:
+                    endpoint: https://unknown.example.com/mcp/
+                    type: http
+                    auth:
+                      type: unknown
+                  valid:
+                    endpoint: https://valid.example.com/mcp/
+                    type: http
+            """)
+            servers = mcp_proxy.load_config(config_path)
+
+            self.assertEqual(len(servers), 1)
+            self.assertEqual(servers[0].key, "valid")
+
     def test_存在しない設定ファイルは空リストを返す(self):
         servers = mcp_proxy.load_config(Path("/nonexistent/config.yaml"))
         self.assertEqual(servers, [])
