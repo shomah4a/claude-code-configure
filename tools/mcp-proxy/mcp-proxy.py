@@ -43,6 +43,7 @@ class AuthBearer:
 @dataclasses.dataclass(frozen=True)
 class AuthHeader:
     headers: Dict[str, str]
+    headers_helper: Optional[str] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -53,18 +54,43 @@ class UpstreamServer:
     auth: Optional[Union[AuthBearer, AuthHeader]] = None
     allow_tools: List[str] = dataclasses.field(default_factory=list)
     deny_tools: List[str] = dataclasses.field(default_factory=list)
-    headers_helper: Optional[str] = None
+
+    @property
+    def headers_helper(self) -> Optional[str]:
+        if isinstance(self.auth, AuthHeader):
+            return self.auth.headers_helper
+        return None
+
+
+def parse_auth_header(auth_config: Dict[str, Any]) -> AuthHeader:
+    """header認証の設定をパースする
+
+    headers（静的ヘッダー）とheaders-helper（動的ヘッダー）はどちらも
+    header認証のための仕組みであり、少なくとも一方が必要。
+    """
+    headers = auth_config.get("headers")
+    if headers is not None and not isinstance(headers, dict):
+        raise ValueError("header認証のheadersは辞書である必要があります")
+
+    headers_helper = auth_config.get("headers-helper")
+    if headers_helper is not None and (
+        not isinstance(headers_helper, str) or headers_helper == ""
+    ):
+        raise ValueError(
+            "header認証のheaders-helperは空でない文字列である必要があります"
+        )
+
+    if not headers and headers_helper is None:
+        raise ValueError(
+            "header認証にはheaders（辞書）またはheaders-helperが必要です"
+        )
+    return AuthHeader(headers=headers or {}, headers_helper=headers_helper)
 
 
 def parse_auth(
     auth_config: Optional[Dict[str, Any]],
-    has_headers_helper: bool,
 ) -> Optional[Union[AuthBearer, AuthHeader]]:
-    """認証設定をパースする
-
-    headers-helperが指定されているサーバーでは、動的ヘッダーで認証する
-    構成を許容するため、header認証のheaders省略を認める。
-    """
+    """認証設定をパースする"""
     if auth_config is None:
         return None
 
@@ -79,14 +105,7 @@ def parse_auth(
         return AuthBearer(token=token)
 
     if auth_type == "header":
-        headers = auth_config.get("headers")
-        if headers is not None and not isinstance(headers, dict):
-            raise ValueError("header認証のheadersは辞書である必要があります")
-        if not headers and not has_headers_helper:
-            raise ValueError(
-                "header認証にはheaders（辞書）またはheaders-helperが必要です"
-            )
-        return AuthHeader(headers=headers or {})
+        return parse_auth_header(auth_config)
 
     raise ValueError(f"未知の認証タイプ: {auth_type}")
 
@@ -126,20 +145,8 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
             )
             continue
 
-        headers_helper = conf.get("headers-helper")
-        if headers_helper is not None and (
-            not isinstance(headers_helper, str) or headers_helper == ""
-        ):
-            print(
-                f"サーバー '{key}' のheaders-helperは空でない文字列である必要があります。スキップします",
-                file=sys.stderr,
-            )
-            continue
-
         try:
-            auth = parse_auth(
-                conf.get("auth"), has_headers_helper=headers_helper is not None
-            )
+            auth = parse_auth(conf.get("auth"))
         except ValueError as e:
             print(
                 f"サーバー '{key}' の認証設定が不正です: {e}。スキップします",
@@ -156,7 +163,6 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
                 auth=auth,
                 allow_tools=allow_tools,
                 deny_tools=deny_tools,
-                headers_helper=headers_helper,
             )
         )
 
