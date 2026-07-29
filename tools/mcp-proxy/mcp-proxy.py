@@ -124,9 +124,11 @@ def load_config(config_path: Path) -> List[UpstreamServer]:
             continue
 
         headers_helper = conf.get("headers-helper")
-        if headers_helper is not None and not isinstance(headers_helper, str):
+        if headers_helper is not None and (
+            not isinstance(headers_helper, str) or headers_helper == ""
+        ):
             print(
-                f"サーバー '{key}' のheaders-helperは文字列である必要があります。スキップします",
+                f"サーバー '{key}' のheaders-helperは空でない文字列である必要があります。スキップします",
                 file=sys.stderr,
             )
             continue

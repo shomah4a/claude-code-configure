@@ -190,6 +190,24 @@ class 設定ファイル読み込みテスト(unittest.TestCase):
             self.assertEqual(len(servers), 1)
             self.assertEqual(servers[0].key, "valid")
 
+    def test_headers_helperが空文字列のサーバーはスキップされる(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_yaml(Path(tmp), """\
+                mcp-servers:
+                  empty-helper:
+                    endpoint: https://empty.example.com/mcp/
+                    type: http
+                    headers-helper: ""
+                  valid:
+                    endpoint: https://valid.example.com/mcp/
+                    type: http
+            """)
+            servers = mcp_proxy.load_config(config_path)
+
+            self.assertEqual(len(servers), 1)
+            self.assertEqual(servers[0].key, "valid")
+
     def test_存在しない設定ファイルは空リストを返す(self):
         servers = mcp_proxy.load_config(Path("/nonexistent/config.yaml"))
         self.assertEqual(servers, [])
