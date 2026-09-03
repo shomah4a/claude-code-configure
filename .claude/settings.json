@@ -53,5 +53,6 @@
     "pr": ""
   },
   "feedbackDrafts": "off",
-  "feedbackSurveyRate": 0
+  "feedbackSurveyRate": 0,
+  "remoteControlAtStartup": false
 }
