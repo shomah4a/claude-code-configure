@@ -48,6 +48,10 @@
     ]
   },
   "attribution": {
-    "sessionUrl": false
-  }
+    "sessionUrl": false,
+    "commit": "",
+    "pr": ""
+  },
+  "feedbackDrafts": "off",
+  "feedbackSurveyRate": 0
 }
