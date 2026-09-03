@@ -45,7 +45,7 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_pr_view_args("octocat/hello-world", 123),
             ["pr", "view", "123", "--repo", "octocat/hello-world", "--json",
-             "number,title,body,state,author,createdAt,updatedAt,mergeable,mergedAt"],
+             "number,title,body,state,author,createdAt,updatedAt,mergeable,mergedAt,closingIssuesReferences"],
         )
 
     def test_Issue一覧取得で任意引数なしの場合は基本引数のみを組み立てる(self):
@@ -68,7 +68,8 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_issue_view_args("octocat/hello-world", 456),
             ["issue", "view", "456", "--repo", "octocat/hello-world", "--json",
-             "number,title,body,state,author,createdAt,updatedAt"],
+             "number,title,body,state,author,createdAt,updatedAt,"
+             "closedByPullRequestsReferences,parent,subIssues,subIssuesSummary,blockedBy,blocking"],
         )
 
     def test_PRコメント取得の引数リストはcommentsフィールドのみを要求する(self):
