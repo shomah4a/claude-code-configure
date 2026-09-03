@@ -155,7 +155,7 @@ TOOLS = [
     },
     {
         "name": "gh_issue_view",
-        "description": "指定されたIssueの詳細情報を取得します",
+        "description": "指定されたIssueの詳細情報を取得します。関連情報として closedByPullRequestsReferences (このIssueをクローズするPR)、parent、subIssues、subIssuesSummary、blockedBy、blocking を含みます。gh 2.94.0 以上が必要です",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -516,7 +516,7 @@ def build_gh_issue_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
 
 def build_gh_issue_view_args(repo: str, number: int) -> List[str]:
     """gh_issue_view の gh コマンド引数を組み立てる"""
-    return ["issue", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt"]
+    return ["issue", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt,closedByPullRequestsReferences,parent,subIssues,subIssuesSummary,blockedBy,blocking"]
 
 
 def build_gh_pr_comments_args(repo: str, number: int) -> List[str]:

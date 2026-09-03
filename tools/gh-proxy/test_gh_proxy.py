@@ -68,7 +68,8 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_issue_view_args("octocat/hello-world", 456),
             ["issue", "view", "456", "--repo", "octocat/hello-world", "--json",
-             "number,title,body,state,author,createdAt,updatedAt"],
+             "number,title,body,state,author,createdAt,updatedAt,"
+             "closedByPullRequestsReferences,parent,subIssues,subIssuesSummary,blockedBy,blocking"],
         )
 
     def test_PRコメント取得の引数リストはcommentsフィールドのみを要求する(self):
