@@ -95,7 +95,7 @@ TOOLS = [
     },
     {
         "name": "gh_pr_view",
-        "description": "指定されたPull Requestの詳細情報を取得します",
+        "description": "指定されたPull Requestの詳細情報を取得します。closingIssuesReferences (このPRがクローズ対象とするIssue) を含みます。gh 2.72.0 以上が必要です",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -495,7 +495,7 @@ def build_gh_pr_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
 
 def build_gh_pr_view_args(repo: str, number: int) -> List[str]:
     """gh_pr_view の gh コマンド引数を組み立てる"""
-    return ["pr", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt,mergeable,mergedAt"]
+    return ["pr", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt,mergeable,mergedAt,closingIssuesReferences"]
 
 
 def build_gh_issue_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
