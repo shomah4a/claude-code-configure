@@ -23,7 +23,7 @@ PORT = int(os.environ.get('GH_PROXY_PORT', '30721'))
 TIMEOUT = int(os.environ.get('GH_PROXY_TIMEOUT', '30'))
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
