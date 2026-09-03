@@ -12,7 +12,11 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 ## 必要要件
 
 - Python 3.8 以上（標準ライブラリのみ使用）
-- GitHub CLI (gh) 2.0.0 以上
+- GitHub CLI (gh) 2.94.0 以上
+  - gh_issue_view の parent / subIssues / subIssuesSummary / blockedBy / blocking は 2.94.0 で追加されたフィールドです
+  - gh_pr_view の closingIssuesReferences は 2.72.0、gh_issue_view の closedByPullRequestsReferences は 2.73.0 で追加されたフィールドです
+  - 要件未満のバージョンでは未知の JSON フィールド指定として gh がエラー終了し、gh_issue_view / gh_pr_view は基本フィールドも含めて取得できません
+- GitHub Enterprise Server を利用する場合は 3.19 以上（sub-issue は 3.17 以上、blockedBy / blocking は 3.19 以上が必要）
 - git（git_push / git_merge_default_branch を利用する場合）
 - GitHub認証済みの環境（`gh auth status` で確認可能）
 
@@ -25,10 +29,14 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 brew install gh
 
 # Ubuntu/Debian
-sudo apt install gh
+# ディストリビューション標準の apt リポジトリの gh は古いバージョン（Ubuntu 24.04 では 2.4.0）のため、
+# GitHub 公式の apt リポジトリを利用します
+# 手順: https://github.com/cli/cli/blob/trunk/docs/install_linux.md
 
 # その他のOSについては https://cli.github.com/ を参照
 ```
+
+インストール後、`gh --version` で 2.94.0 以上であることを確認してください。
 
 ### 2. GitHub認証
 
@@ -56,6 +64,8 @@ GH_PROXY_PORT=30800 GH_PROXY_TIMEOUT=60 python3 tools/gh-proxy/gh-proxy.py
 ```
 
 サーバーはすべてのネットワークインターフェースで待ち受けます（bind制限や認証はありません）。
+
+サーバーは起動時のコードで動作し続けるため、gh-proxy.py を更新した場合はサーバーを再起動してください。
 Dockerコンテナからは `host.docker.internal` 経由でアクセス可能です。
 
 ## Claude Codeとの連携
@@ -130,6 +140,15 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 - `repository_name` (必須): リポジトリ名
 - `number` (必須): PR番号
 
+**返却フィールド:**
+`gh pr view --json` の出力をそのまま返します。
+
+- `number`, `title`, `body`, `state`, `author`, `createdAt`, `updatedAt`, `mergeable`, `mergedAt`
+- `closingIssuesReferences`: このPRがクローズ対象とするIssue（development リンクまたは本文の closing keyword で紐付けられたもの）。
+  `{ "nodes": [...], "totalCount": N }` の形状
+
+本文中の `#123` 形式の単なる言及や timeline の cross-reference は含まれません。
+
 **例:**
 ```json
 {
@@ -174,6 +193,21 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 - `owner` (必須): リポジトリのオーナー名
 - `repository_name` (必須): リポジトリ名
 - `number` (必須): Issue番号
+
+**返却フィールド:**
+`gh issue view --json` の出力をそのまま返します。
+
+- `number`, `title`, `body`, `state`, `author`, `createdAt`, `updatedAt`
+- `closedByPullRequestsReferences`: このIssueをクローズする（した）PR
+- `parent`: 親Issue
+- `subIssues`: サブIssueの一覧
+- `subIssuesSummary`: サブIssueの件数サマリー（total / completed / percentCompleted）
+- `blockedBy`: このIssueをブロックしているIssue
+- `blocking`: このIssueがブロックしているIssue
+
+`closedByPullRequestsReferences`, `subIssues`, `blockedBy`, `blocking` は `{ "nodes": [...], "totalCount": N }` の形状です。
+サブIssueが多いIssueではレスポンスサイズが大きくなります。
+本文中の `#123` 形式の単なる言及や timeline の cross-reference は含まれません。
 
 **例:**
 ```json
