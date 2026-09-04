@@ -212,23 +212,6 @@ class RepositoryPathValidationTest(unittest.TestCase):
             gh_proxy.validate_repository_path(tmpdir)
 
 
-class DefaultBranchGuardTest(unittest.TestCase):
-    """デフォルトブランチへの push 拒否のテスト"""
-
-    def test_pushブランチがデフォルトブランチと一致するとValidationErrorになる(self):
-        with self.assertRaises(gh_proxy.ValidationError):
-            gh_proxy.validate_branch_is_not_default("main", "main")
-
-    def test_pushブランチがデフォルトブランチと異なる場合は例外にならない(self):
-        gh_proxy.validate_branch_is_not_default("feature/x", "main")
-
-    def test_カレントリポジトリのデフォルトブランチ取得の引数リストを組み立てる(self):
-        self.assertEqual(
-            gh_proxy.build_gh_local_default_branch_args(),
-            ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
-        )
-
-
 class BuildGitPushArgsTest(unittest.TestCase):
     """git_push の引数組み立てのテスト"""
 
@@ -341,6 +324,12 @@ class GhPrCreateSchemaValidationTest(unittest.TestCase):
 class BuildGitMergeDefaultBranchArgsTest(unittest.TestCase):
     """git_merge_default_branch の引数組み立てのテスト"""
 
+    def test_カレントリポジトリのデフォルトブランチ取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_local_default_branch_args(),
+            ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+        )
+
     def test_パスから全リモートfetchの引数リストを組み立てる(self):
         self.assertEqual(
             gh_proxy.build_git_fetch_all_args("/home/user/repo"),
@@ -364,6 +353,39 @@ class BuildGitMergeDefaultBranchArgsTest(unittest.TestCase):
             gh_proxy.build_git_merge_head_check_args("/home/user/repo"),
             ["-C", "/home/user/repo", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
         )
+
+
+class GitPushToDefaultBranchTest(unittest.TestCase):
+    """実 git リポジトリでのデフォルトブランチへの push のテスト"""
+
+    def _run_git(self, *args):
+        stdout, stderr, code = gh_proxy.execute_git_command(list(args))
+        self.assertEqual(code, 0, stderr)
+        return stdout.strip()
+
+    def _create_bare_origin_and_clone(self, base_dir):
+        """main をデフォルトブランチとする bare リポジトリと、その clone を作る"""
+        origin_dir = os.path.join(base_dir, "origin.git")
+        clone_dir = os.path.join(base_dir, "clone")
+        self._run_git("init", "-q", "--bare", "-b", "main", origin_dir)
+        self._run_git("clone", "-q", origin_dir, clone_dir)
+        self._run_git("-C", clone_dir, "config", "user.email", "test@example.com")
+        self._run_git("-C", clone_dir, "config", "user.name", "test")
+        self._run_git("-C", clone_dir, "symbolic-ref", "HEAD", "refs/heads/main")
+        with open(os.path.join(clone_dir, "data.txt"), "w") as f:
+            f.write("base\n")
+        self._run_git("-C", clone_dir, "add", "data.txt")
+        self._run_git("-C", clone_dir, "commit", "-q", "-m", "base")
+        return origin_dir, clone_dir
+
+    def test_デフォルトブランチへのpushはgh非依存で拒否されずoriginに反映される(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, clone_dir = self._create_bare_origin_and_clone(base_dir)
+            gh_proxy.execute_git_push({"path": clone_dir, "branch": "main"})
+            self.assertEqual(
+                self._run_git("-C", origin_dir, "rev-parse", "main"),
+                self._run_git("-C", clone_dir, "rev-parse", "main"),
+            )
 
 
 class MergeInProgressDetectionTest(unittest.TestCase):

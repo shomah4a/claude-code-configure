@@ -23,7 +23,7 @@ PORT = int(os.environ.get('GH_PROXY_PORT', '30721'))
 TIMEOUT = int(os.environ.get('GH_PROXY_TIMEOUT', '30'))
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.3.0"
+SERVER_VERSION = "1.4.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
@@ -629,14 +629,6 @@ def build_gh_local_default_branch_args() -> List[str]:
     return ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
 
 
-def validate_branch_is_not_default(branch: str, default_branch: str) -> None:
-    """push 対象ブランチがデフォルトブランチでないことを検証"""
-    if branch == default_branch:
-        raise ValidationError(
-            f"デフォルトブランチ ({default_branch}) への push は許可されていません"
-        )
-
-
 def resolve_local_repo_default_branch(path: str) -> str:
     """
     path のリポジトリのデフォルトブランチ名を gh で取得する
@@ -665,7 +657,6 @@ def execute_git_push(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     validate_repository_path(path)
     validate_branch_name(branch, "branch")
-    validate_branch_is_not_default(branch, resolve_local_repo_default_branch(path))
 
     stdout, stderr, code = execute_git_command(build_git_push_args(path, branch))
 
