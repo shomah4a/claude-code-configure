@@ -45,7 +45,8 @@ gh auth login
 ```
 
 readonly ツールのみ利用する場合、認証トークンのスコープは `repo:read` または `public_repo` のみに制限することを推奨します。
-git_push / gh_pr_create を利用する場合は、対象リポジトリへの書き込みが可能なスコープ（`repo` 等）が必要です。
+gh_pr_create を利用する場合は、対象リポジトリへの書き込みが可能なスコープ（`repo` 等）が必要です。
+git_push は gh を利用せず、ホスト側の git の認証設定（credential helper 等）で push します。
 
 ### 3. サーバーの起動
 
@@ -308,10 +309,11 @@ head となるブランチは事前に push されている必要があります
 
 remote は `origin` 固定です。force push、ブランチ削除、その他のオプション指定はできません。
 
-push 先ブランチがデフォルトブランチと一致する場合、push は拒否されます。
-デフォルトブランチは対象リポジトリを作業ディレクトリとして `gh repo view` で判定します。
-判定できない場合（GitHub 以外の remote、gh 未認証等）も push を拒否します（fail-closed）。
-このため git_push の利用には gh と GitHub 認証が必要です。
+push 先ブランチに制限はなく、デフォルトブランチ（main 等）へも push できます。
+デフォルトブランチの保護が必要な場合は、リポジトリ側の branch protection / ruleset で制限してください。
+
+git_push は gh を利用せず git のみで動作するため、GitHub 認証は不要です。
+origin が GitHub 以外の remote であっても push を実行します。
 
 **例:**
 ```json
@@ -331,8 +333,9 @@ push 先ブランチがデフォルトブランチと一致する場合、push �
 **引数:**
 - `path` (必須): クローン済みリポジトリルートの絶対パス（サーバーが動作するホスト側ファイルシステム上のパス）
 
-デフォルトブランチは git_push と同様に、対象リポジトリを作業ディレクトリとして `gh repo view` で判定します。
-判定できない場合はマージを実行しません（fail-closed）。このため利用には gh と GitHub 認証が必要です。
+デフォルトブランチは対象リポジトリを作業ディレクトリとして `gh repo view` で判定します。
+判定できない場合（GitHub 以外の remote、gh 未認証等）はマージを実行しません（fail-closed）。
+このため利用には gh と GitHub 認証が必要です。
 
 マージがコンフリクトで失敗した場合は `git merge --abort` で自動的に巻き戻し、
 コンフリクト内容を含むエラーを返します。abort にも失敗した場合はリポジトリがマージ途中状態のまま残ります。
@@ -368,7 +371,9 @@ push 先ブランチがデフォルトブランチと一致する場合、push �
 
 加えて、以下の書き込み操作を提供します：
 - ブランチのpush（git_push）: remote は origin 固定。force push・ブランチ削除・オプション指定は不可。
-  デフォルトブランチへの push は拒否（デフォルトブランチを判定できない場合も拒否）
+  push 先ブランチの制限はなく、デフォルトブランチへの push も許可します（1.3.x までは拒否していました）。
+  デフォルトブランチの保護はリポジトリ側の branch protection / ruleset で行ってください。
+  gh を利用しないため、origin が GitHub 以外の remote であっても push を実行します
 - Pull Request作成（gh_pr_create）
 - デフォルトブランチのマージ（git_merge_default_branch）: ローカルリポジトリの作業ツリー・
   インデックス・HEAD を書き換える操作です
@@ -398,9 +403,9 @@ git_push / git_merge_default_branch の `path` には「絶対パス・ディレ
 
 GitHub認証トークンは利用するツールに応じて必要最小限のスコープに制限することを推奨します：
 - readonly ツールのみ利用する場合: `repo:read` または `public_repo`
-- git_push / gh_pr_create を利用する場合: 対象リポジトリへの書き込みが可能なスコープ（`repo` 等）
+- gh_pr_create を利用する場合: 対象リポジトリへの書き込みが可能なスコープ（`repo` 等）
 
-なお、git_push はホスト側の git の認証設定（credential helper 等）を利用します。
+なお、git_push は gh を利用せず、ホスト側の git の認証設定（credential helper 等）を利用します。
 
 ## トラブルシューティング
 
