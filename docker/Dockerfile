@@ -1,24 +1,36 @@
-FROM public.ecr.aws/amazoncorretto/amazoncorretto:21-al2023
+FROM ubuntu:26.04
+
+# 旧ベースイメージ (amazoncorretto:21-al2023) が設定していた ENV を引き継ぐ。
+# JAVA_HOME のパスはアーキテクチャ名を含む。Node.js の取得も linux-x64 固定のため amd64 前提とする。
+ENV LANG=C.UTF-8
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+
+# apt の対話プロンプト (tzdata 等) を抑止する。ビルド時のみ有効にするため ARG にする
+ARG DEBIAN_FRONTEND=noninteractive
 
 # システムパッケージの更新と必要なツールのインストール
-RUN dnf update -y && \
-    dnf install -y \
+# `which` は仮想パッケージのため実体の gnu-which を指定する
+RUN apt-get update && \
+    apt-get -y upgrade && \
+    apt-get install -y --no-install-recommends \
+    openjdk-21-jdk \
     git \
     python3 \
     python3-pip \
-    gcc \
-    gcc-c++ \
-    make \
+    python3-venv \
+    build-essential \
     tar \
-    xz \
-    shadow-utils \
+    xz-utils \
     jq \
-    procps-ng \
+    procps \
     poppler-utils \
+    curl \
+    ca-certificates \
     wget \
-    which \
+    gnu-which \
     emacs-nox \
-    && dnf clean all
+    rcs \
+    && rm -rf /var/lib/apt/lists/*
 
 # Node.js 22のインストール
 ENV NODE_VERSION=22.17.1
@@ -38,18 +50,34 @@ WORKDIR /app
 # RUN claude plugins add jdtls-lsp@claude-plugins-official
 
 # ubuntuユーザーの作成
-RUN useradd -m -s /bin/bash ubuntu
+# ホスト側ユーザーとファイル所有者を揃えるため uid/gid は 1000 に固定する。
+# Ubuntu 24.04 以降のベースイメージには uid 1000 の ubuntu ユーザーが既に存在するため、
+# 存在する場合は uid/gid とシェルを明示的に揃え、存在しない場合のみ作成する。
+# 最後にビルド時アサーションを行い、期待と異なればビルドを失敗させる。
+ENV CONTAINER_UID=1000
+ENV CONTAINER_GID=1000
+RUN set -eu; \
+    if id ubuntu >/dev/null 2>&1; then \
+        groupmod -g ${CONTAINER_GID} ubuntu; \
+        usermod -u ${CONTAINER_UID} -g ${CONTAINER_GID} -s /bin/bash ubuntu; \
+    else \
+        groupadd -g ${CONTAINER_GID} ubuntu; \
+        useradd -m -u ${CONTAINER_UID} -g ${CONTAINER_GID} -s /bin/bash ubuntu; \
+    fi; \
+    test "$(id -u ubuntu)" = "${CONTAINER_UID}"; \
+    test "$(id -g ubuntu)" = "${CONTAINER_GID}"; \
+    test "$(getent passwd ubuntu | cut -d: -f7)" = "/bin/bash"; \
+    install -d -o ubuntu -g ubuntu \
+        /home/ubuntu \
+        /home/ubuntu/.ivy2 \
+        /home/ubuntu/.config \
+        /home/ubuntu/bin
 
 # ヘルスチェック
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD claude --version && java -version
 
 USER ubuntu
-
-
-RUN mkdir /home/ubuntu/.ivy2
-RUN mkdir /home/ubuntu/.config
-RUN mkdir /home/ubuntu/bin
 
 RUN cat <<'EOF' > /home/ubuntu/.bashrc
 PATH=$PATH:$HOME/bin
