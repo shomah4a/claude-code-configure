@@ -40,13 +40,10 @@ BIND_ENV = "AWS_CLI_PROXY_BIND"
 DEFAULT_BIND = "127.0.0.1"
 PORT_ENV = "AWS_CLI_PROXY_PORT"
 DEFAULT_PORT = 30722
-TOOL_NAME = "aws_get_credentials"
+TOOL_NAME = "aws_run"
 ALLOWED_HOSTS_ENV = "AWS_CLI_PROXY_ALLOWED_HOSTS"
 # loopback を指すホスト名。Host / Origin ヘッダのホスト部がこれ以外なら 403 (DNS リバインディング対策)
 DEFAULT_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
-
-# aws configure export-credentials --format process の出力仕様バージョン
-EXPECTED_PROCESS_FORMAT_VERSION = 1
 
 # name と profile に共通。先頭の - を拒否して subprocess へのオプション注入を防ぐ
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -69,9 +66,6 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
-# (stdout, stderr, returncode) を返すコマンド実行関数。副作用 (プロセス起動) を外部注入するための型
-RunCommand = Callable[[List[str]], Tuple[str, str, int]]
-
 
 @dataclasses.dataclass(frozen=True)
 class CommandResult:
@@ -88,7 +82,7 @@ AwsCommandRunner = Callable[[Sequence[str]], CommandResult]
 
 
 @dataclasses.dataclass(frozen=True)
-class CredentialEntry:
+class ProfileEntry:
     """設定ファイルの profiles 配下の 1 エントリ"""
 
     name: str
@@ -99,20 +93,6 @@ class ConfigError(Exception):
     """設定ファイルの致命的な不備 (起動を継続できない)"""
 
 
-@dataclasses.dataclass(frozen=True)
-class AwsCredentials:
-    """aws configure export-credentials --format process の出力を表す"""
-
-    access_key_id: str
-    secret_access_key: str
-    session_token: Optional[str]
-    expiration: Optional[str]
-
-
-class CredentialFetchError(Exception):
-    """認証情報の取得失敗。メッセージはクライアントに返すため秘密情報を含めてはならない"""
-
-
 class ValidationError(Exception):
     """MCP リクエストの引数検証失敗 (JSON-RPC の INVALID_PARAMS に対応する)"""
 
@@ -121,8 +101,8 @@ class CommandExecutionError(Exception):
     """aws コマンド実行そのものの失敗 (タイムアウト、コマンド不在)。メッセージはクライアントに返す"""
 
 
-def parse_credential_entry(name: Any, conf: Any) -> CredentialEntry:
-    """1 エントリ分の name / conf を検証し CredentialEntry に変換する
+def parse_credential_entry(name: Any, conf: Any) -> ProfileEntry:
+    """1 エントリ分の name / conf を検証し ProfileEntry に変換する
 
     不正な場合は理由を含む ValueError を送出する。
     """
@@ -140,11 +120,11 @@ def parse_credential_entry(name: Any, conf: Any) -> CredentialEntry:
     if not isinstance(profile, str) or not IDENTIFIER_PATTERN.match(profile):
         raise ValueError("profile は英数字で始まる英数字と._-のみの文字列である必要があります")
 
-    return CredentialEntry(name=name, profile=profile)
+    return ProfileEntry(name=name, profile=profile)
 
 
-def parse_entries(raw: Any, report: Callable[[str], None]) -> List[CredentialEntry]:
-    """設定全体 (yaml.safe_load の戻り値) から有効な CredentialEntry のリストを作る
+def parse_entries(raw: Any, report: Callable[[str], None]) -> List[ProfileEntry]:
+    """設定全体 (yaml.safe_load の戻り値) から有効な ProfileEntry のリストを作る
 
     個々のエントリが不正な場合はスキップして report で通知し、
     設定ファイル自体の構造が不正、または有効なエントリが 0 件の場合は ConfigError を送出する。
@@ -156,7 +136,7 @@ def parse_entries(raw: Any, report: Callable[[str], None]) -> List[CredentialEnt
     if not isinstance(profiles, dict):
         raise ConfigError(f"profilesは辞書である必要がありますが{type(profiles).__name__}でした")
 
-    entries: List[CredentialEntry] = []
+    entries: List[ProfileEntry] = []
     for name, conf in profiles.items():
         try:
             entries.append(parse_credential_entry(name, conf))
@@ -169,8 +149,8 @@ def parse_entries(raw: Any, report: Callable[[str], None]) -> List[CredentialEnt
     return entries
 
 
-def load_config(config_path: Path, report: Callable[[str], None]) -> List[CredentialEntry]:
-    """設定ファイルを読み込み、有効な CredentialEntry のリストを返す"""
+def load_config(config_path: Path, report: Callable[[str], None]) -> List[ProfileEntry]:
+    """設定ファイルを読み込み、有効な ProfileEntry のリストを返す"""
     if not config_path.exists():
         raise ConfigError(f"設定ファイルが見つかりません: {config_path}")
 
@@ -197,125 +177,6 @@ def resolve_config_path(environ: Mapping[str, str]) -> Path:
     return DEFAULT_CONFIG_PATH
 
 
-def build_export_credentials_args(profile: str) -> List[str]:
-    """指定プロファイルの認証情報を process 形式で取得する aws コマンド引数を組み立てる"""
-    return ["aws", "configure", "export-credentials", "--profile", profile, "--format", "process"]
-
-
-def build_get_region_args(profile: str) -> List[str]:
-    """指定プロファイルの region を取得する aws コマンド引数を組み立てる"""
-    return ["aws", "configure", "get", "region", "--profile", profile]
-
-
-def _require_str_field(data: Dict[str, Any], field: str) -> str:
-    """data[field] が存在する str であることを検証して返す
-
-    export-credentials の出力 (data) は秘密情報を含みうるため、
-    フィールド名以外の値をエラーメッセージに含めてはならない。
-    """
-    value = data.get(field)
-    if not isinstance(value, str):
-        raise CredentialFetchError(f"export-credentials の出力に {field} がありません")
-    return value
-
-
-def _optional_str_field(data: Dict[str, Any], field: str) -> Optional[str]:
-    """data[field] が省略可能な str であることを検証して返す"""
-    value = data.get(field)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise CredentialFetchError(f"export-credentials の出力の {field} の形式が不正です")
-    return value
-
-
-def parse_export_credentials_output(stdout: str) -> AwsCredentials:
-    """aws configure export-credentials --format process の標準出力を解析する
-
-    stdout は認証情報そのものを含むため、失敗時の例外メッセージに含めてはならない。
-    json.JSONDecodeError からは e.pos のみを参照し、入力文字列を保持する e.doc は参照しない。
-    """
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError as e:
-        raise CredentialFetchError(f"export-credentials の出力を JSON として解釈できません (位置 {e.pos})")
-
-    if not isinstance(data, dict):
-        raise CredentialFetchError("export-credentials の出力が JSON オブジェクトではありません")
-
-    if data.get("Version") != EXPECTED_PROCESS_FORMAT_VERSION:
-        raise CredentialFetchError(
-            f"export-credentials の出力の Version が想定 ({EXPECTED_PROCESS_FORMAT_VERSION}) と異なります"
-        )
-
-    return AwsCredentials(
-        access_key_id=_require_str_field(data, "AccessKeyId"),
-        secret_access_key=_require_str_field(data, "SecretAccessKey"),
-        session_token=_optional_str_field(data, "SessionToken"),
-        expiration=_optional_str_field(data, "Expiration"),
-    )
-
-
-def build_env_mapping(credentials: AwsCredentials, region: Optional[str]) -> Dict[str, str]:
-    """認証情報と region から MCP ツールの戻り値となる環境変数マッピングを作る"""
-    env: Dict[str, str] = {
-        "AWS_ACCESS_KEY_ID": credentials.access_key_id,
-        "AWS_SECRET_ACCESS_KEY": credentials.secret_access_key,
-    }
-    if credentials.session_token is not None:
-        env["AWS_SESSION_TOKEN"] = credentials.session_token
-    if credentials.expiration is not None:
-        env["AWS_CREDENTIAL_EXPIRATION"] = credentials.expiration
-    if region is not None:
-        env["AWS_REGION"] = region
-        env["AWS_DEFAULT_REGION"] = region
-    return env
-
-
-def fetch_region(profile: str, run_command: RunCommand, report: Callable[[str], None]) -> Optional[str]:
-    """指定プロファイルの region を取得する
-
-    取得できなくても認証情報自体の返却は妨げないため、失敗時は report で通知して None を返す。
-    """
-    stdout, stderr, code = run_command(build_get_region_args(profile))
-    region = stdout.strip()
-    if code == 0 and region:
-        return region
-
-    report(
-        f"プロファイル '{profile}' の region を取得できなかったため返却値に含めません"
-        f" (終了コード {code}): {stderr.strip()}"
-    )
-    return None
-
-
-def is_export_credentials_unavailable(stderr: str) -> bool:
-    """stderr が export-credentials サブコマンド未実装 (AWS CLI v1 等) によるものかを判定する"""
-    return "Invalid choice" in stderr and "export-credentials" in stderr
-
-
-def fetch_credentials(profile: str, run_command: RunCommand, report: Callable[[str], None]) -> Dict[str, str]:
-    """指定プロファイルの認証情報と region を取得し、環境変数マッピングとして返す
-
-    aws コマンドの標準エラー出力は report にのみ渡し、クライアント向け例外メッセージには含めない。
-    """
-    stdout, stderr, code = run_command(build_export_credentials_args(profile))
-
-    if code != 0:
-        if is_export_credentials_unavailable(stderr):
-            raise CredentialFetchError(
-                "aws configure export-credentials が利用できません。AWS CLI v2 (2.9 以降) が必要です"
-            )
-        report(f"export-credentials が終了コード {code} で失敗しました: {stderr.strip()}")
-        raise CredentialFetchError(
-            f"認証情報の取得に失敗しました (終了コード {code})。詳細はサーバーログを参照してください"
-        )
-
-    credentials = parse_export_credentials_output(stdout)
-    region = fetch_region(profile, run_command, report)
-    return build_env_mapping(credentials, region)
-
-
 def resolve_timeout_sec(environ: Mapping[str, str]) -> int:
     """環境変数からサブプロセスのタイムアウト秒数を決定する"""
     configured = environ.get(TIMEOUT_ENV)
@@ -326,34 +187,6 @@ def resolve_timeout_sec(environ: Mapping[str, str]) -> int:
         return int(configured)
     except ValueError:
         raise ConfigError(f"{TIMEOUT_ENV} は整数である必要があります: {configured}")
-
-
-def create_run_command(timeout_sec: int, env: Mapping[str, str]) -> RunCommand:
-    """subprocess.run をラップした RunCommand を作る
-
-    プロセス起動という副作用をここに閉じ込め、呼び出し側には RunCommand として注入する。
-    """
-    def run_command(command: List[str]) -> Tuple[str, str, int]:
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec,
-                shell=False,
-                stdin=subprocess.DEVNULL,
-                env=dict(env),
-            )
-        except subprocess.TimeoutExpired:
-            raise CredentialFetchError(f"コマンド実行がタイムアウトしました ({timeout_sec}秒)")
-        except FileNotFoundError:
-            raise CredentialFetchError(
-                "aws コマンドが見つかりません。AWS CLI v2 (2.9 以降) をインストールしてください"
-            )
-
-        return result.stdout, result.stderr, result.returncode
-
-    return run_command
 
 
 def build_aws_command(profile: str, args: Sequence[str]) -> List[str]:
@@ -476,51 +309,67 @@ def verify_aws_cli_v2(runner: AwsCommandRunner) -> str:
     return first_line
 
 
-def build_tools(entries: List[CredentialEntry]) -> List[Dict[str, Any]]:
+def build_tools(entries: List[ProfileEntry]) -> List[Dict[str, Any]]:
     """MCP tools/list で返すツール定義を組み立てる"""
     return [
         {
             "name": TOOL_NAME,
             "description": (
-                "設定ファイルで定義した name に対応する AWS プロファイルの認証情報を取得し、"
-                "環境変数名をキーとする JSON オブジェクトで返します。"
-                "一時認証情報は AWS_CREDENTIAL_EXPIRATION の時刻で失効するため、"
-                "失効後は再取得してください"
+                "設定ファイルで定義した name のプロファイルを固定して、"
+                "ホスト側で aws コマンドを実行し標準出力を返します。"
+                "args は aws に続く引数の配列です "
+                '(例: ["s3", "ls"], ["sts", "get-caller-identity", "--output", "json"])。'
+                "--profile / --debug / --endpoint-url / --no-verify-ssl / --ca-bundle は指定できません。"
+                "configure / sso / help サブコマンドは使えません。"
+                "file:// や、/ ~ ./ ../ で始まるホストのパスは指定できません。"
+                "出力は既定 1 MiB で切り詰められるため、大きい結果は --query や --max-items で絞ってください"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "取得する認証情報の名前 (aws-cli-proxy.yml の profiles 配下のキー)",
+                        "description": "使用するプロファイルの名前 (aws-cli-proxy.yml の profiles 配下のキー)",
                         "enum": [entry.name for entry in entries],
-                    }
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "description": "aws に続く引数の配列",
+                    },
                 },
-                "required": ["name"],
+                "required": ["name", "args"],
             },
         }
     ]
 
 
-def validate_arguments(arguments: Any, entries: List[CredentialEntry]) -> CredentialEntry:
-    """tools/call の arguments を検証し、対応する CredentialEntry を返す"""
+def validate_arguments(arguments: Any, entries: List[ProfileEntry]) -> Tuple[ProfileEntry, List[str]]:
+    """tools/call の arguments を検証し、対応する ProfileEntry と args を返す"""
     if not isinstance(arguments, dict):
         raise ValidationError("arguments は辞書である必要があります")
 
     if "name" not in arguments:
         raise ValidationError("必須フィールドが不足しています: name")
 
+    if "args" not in arguments:
+        raise ValidationError("必須フィールドが不足しています: args")
+
     for field in arguments:
-        if field != "name":
+        if field not in ("name", "args"):
             raise ValidationError(f"未知のフィールド: {field}")
 
     name = arguments["name"]
     if not isinstance(name, str):
         raise ValidationError("name は文字列である必要があります")
 
+    args = arguments["args"]
+    validate_aws_args(args)
+
     for entry in entries:
         if entry.name == name:
-            return entry
+            return entry, args
 
     raise ValidationError(f"未知の name: {name}")
 
@@ -648,8 +497,8 @@ def handle_tools_list(tools: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def handle_tools_call(
     params: Dict[str, Any],
-    entries: List[CredentialEntry],
-    run_command: RunCommand,
+    entries: List[ProfileEntry],
+    runner: AwsCommandRunner,
     report: Callable[[str], None],
 ) -> Dict[str, Any]:
     """tools/call メソッドの処理"""
@@ -660,18 +509,31 @@ def handle_tools_call(
     if tool_name != TOOL_NAME:
         raise ValidationError(f"未知のツール: {tool_name}")
 
-    entry = validate_arguments(params.get("arguments", {}), entries)
+    entry, args = validate_arguments(params.get("arguments", {}), entries)
 
     try:
-        mapping = fetch_credentials(entry.profile, run_command, report)
-    except CredentialFetchError as e:
+        result = run_aws(entry.profile, args, runner)
+    except CommandExecutionError as e:
         return {
             "content": [{"type": "text", "text": f"エラー: {e}"}],
             "isError": True
         }
 
+    if result.returncode == 0:
+        return {
+            "content": [{"type": "text", "text": result.stdout}]
+        }
+
     return {
-        "content": [{"type": "text", "text": json.dumps(mapping, indent=2)}]
+        "content": [{
+            "type": "text",
+            "text": (
+                f"aws は終了コード {result.returncode} で失敗しました\n"
+                f"--- stdout ---\n{result.stdout}\n"
+                f"--- stderr ---\n{result.stderr}"
+            ),
+        }],
+        "isError": True
     }
 
 
@@ -702,9 +564,9 @@ def create_success_response(request_id: Any, result: Any) -> Dict[str, Any]:
 
 def handle_jsonrpc_request(
     request: Dict[str, Any],
-    entries: List[CredentialEntry],
+    entries: List[ProfileEntry],
     tools: List[Dict[str, Any]],
-    run_command: RunCommand,
+    runner: AwsCommandRunner,
     report: Callable[[str], None],
 ) -> Dict[str, Any]:
     """JSON-RPCリクエストを処理"""
@@ -734,7 +596,7 @@ def handle_jsonrpc_request(
         elif method == "tools/list":
             result = handle_tools_list(tools)
         elif method == "tools/call":
-            result = handle_tools_call(params, entries, run_command, report)
+            result = handle_tools_call(params, entries, runner, report)
         else:
             return create_error_response(
                 request_id,
@@ -813,8 +675,8 @@ def is_request_from_allowed_host(environ: Dict[str, Any], allowed_hosts: FrozenS
 
 
 def create_application(
-    entries: List[CredentialEntry],
-    run_command: RunCommand,
+    entries: List[ProfileEntry],
+    runner: AwsCommandRunner,
     report: Callable[[str], None],
     allowed_hosts: FrozenSet[str],
 ) -> Callable[[Dict[str, Any], Callable[..., None]], List[bytes]]:
@@ -856,7 +718,7 @@ def create_application(
             )
         else:
             if isinstance(request, dict):
-                response = handle_jsonrpc_request(request, entries, tools, run_command, report)
+                response = handle_jsonrpc_request(request, entries, tools, runner, report)
             else:
                 response = create_error_response(
                     None,
@@ -924,13 +786,16 @@ def main() -> int:
         entries = load_config(config_path, report_to_stderr)
         timeout_sec = resolve_timeout_sec(environ)
         port = resolve_port(environ)
+        max_output_bytes = resolve_max_output_bytes(environ)
+        # credential_process (aws-vault 等) がキーリングやエージェントの環境変数を必要とするため、
+        # サーバーの環境をそのまま aws に引き継ぐ (AWS_PAGER のみ空文字列で上書きする)。
+        # --profile を明示しているため AWS_ACCESS_KEY_ID 等による取り違えは起きない
+        runner = create_aws_command_runner(timeout_sec, max_output_bytes, build_aws_subprocess_env(environ))
+        aws_cli_version = verify_aws_cli_v2(runner)
     except ConfigError as e:
         print(f"設定エラー: {e}", file=sys.stderr)
         return 1
 
-    # credential_process (aws-vault 等) がキーリングやエージェントの環境変数を必要とするため、
-    # サーバーの環境をそのまま aws に引き継ぐ。--profile を明示しているため AWS_ACCESS_KEY_ID 等による取り違えは起きない
-    run_command = create_run_command(timeout_sec, environ)
     bind = resolve_bind(environ)
     allowed_hosts = resolve_allowed_hosts(environ)
 
@@ -940,12 +805,14 @@ def main() -> int:
     print(f"Server: {SERVER_NAME} v{SERVER_VERSION}", flush=True)
     print(f"設定ファイル: {config_path}", flush=True)
     print(f"登録された name: {', '.join(entry.name for entry in entries)}", flush=True)
+    print(f"AWS CLI: {aws_cli_version}", flush=True)
+    print(f"出力上限: {max_output_bytes} バイト", flush=True)
     print(f"許可する Host: {', '.join(sorted(allowed_hosts))}", flush=True)
     print(f"Bind: {bind}:{port}", flush=True)
     print(flush=True)
     print("サーバーを起動しています...", flush=True)
 
-    application = create_application(entries, run_command, report_to_stderr, allowed_hosts)
+    application = create_application(entries, runner, report_to_stderr, allowed_hosts)
     with make_server(bind, port, application) as httpd:
         print(f"サーバーが起動しました: http://{bind}:{port}", flush=True)
         print("Ctrl+C で停止します", flush=True)
