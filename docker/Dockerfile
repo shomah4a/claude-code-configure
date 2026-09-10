@@ -30,6 +30,8 @@ RUN apt-get update && \
     gnu-which \
     emacs-nox \
     rcs \
+    unzip \
+    less \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 22のインストール
@@ -42,6 +44,18 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.259
 
 # Codex をグローバルインストール
 RUN npm install -g @openai/codex@0.144.1
+
+# AWS CLI v2 のインストール
+# 公式配布の zip をバージョン固定で取得し、同梱の install スクリプトで /usr/local/aws-cli に展開する
+# (/usr/local/bin/aws に symlink が作られる)。apt の awscli は v1 系のため使わない。
+# unzip は展開に、less は AWS CLI v2 の既定 pager として必要 (上の apt で導入)。
+# バージョン付き URL の形式: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-version.html
+# amd64 固定 (aarch64 は awscli-exe-linux-aarch64-<version>.zip)。root で実行するため USER ubuntu より前に置く。
+ENV AWS_CLI_VERSION=2.36.42
+RUN curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/aws /tmp/awscliv2.zip
 
 # 作業ディレクトリを設定
 WORKDIR /app
