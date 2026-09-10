@@ -12,7 +12,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # 実際の認証情報ではないことが明らかなダミー値 (AWS公式ドキュメントの例示用文字列)
 DUMMY_ACCESS_KEY_ID = "AKIAEXAMPLESECRET"
@@ -457,6 +457,200 @@ class CreateRunCommandTest(unittest.TestCase):
         stdout, _stderr, code = run_command(["sh", "-c", "echo $HOME-$AWS_VAULT_BACKEND"])
         self.assertEqual(code, 0)
         self.assertEqual(stdout, "test-home-value-file\n")
+
+
+class BuildAwsCommandTest(unittest.TestCase):
+    """build_aws_command のテスト"""
+
+    def test_aws_profile_pの後にargsがそのまま続く(self):
+        self.assertEqual(
+            aws_cli_proxy.build_aws_command("p", ["s3", "ls"]),
+            ["aws", "--profile", "p", "s3", "ls"],
+        )
+
+
+class TruncateOutputTest(unittest.TestCase):
+    """truncate_output のテスト"""
+
+    def test_上限以下のバイト列はそのままdecodeされtruncatedはFalse(self):
+        text, truncated = aws_cli_proxy.truncate_output(b"hello", 100)
+        self.assertEqual(text, "hello")
+        self.assertFalse(truncated)
+
+    def test_上限を超えるバイト列は先頭limitバイトに切り詰め注記が続きtruncatedはTrue(self):
+        text, truncated = aws_cli_proxy.truncate_output(b"a" * 10, 3)
+        self.assertTrue(truncated)
+        self.assertTrue(text.startswith("aaa"))
+        self.assertIn(aws_cli_proxy.OUTPUT_TRUNCATED_NOTICE.format(limit=3), text)
+
+    def test_マルチバイト文字が境界で切れても例外にならず置換文字を含む(self):
+        data = "あ".encode("utf-8")
+        text, truncated = aws_cli_proxy.truncate_output(data, 2)
+        self.assertTrue(truncated)
+        self.assertIn("�", text)
+
+    def test_不正なUTF8バイト列は置換文字になる(self):
+        text, truncated = aws_cli_proxy.truncate_output(b"\xff\xfe", 100)
+        self.assertFalse(truncated)
+        self.assertIn("�", text)
+
+
+class ResolveMaxOutputBytesTest(unittest.TestCase):
+    """resolve_max_output_bytes のテスト"""
+
+    def test_環境変数が無ければ既定値を使う(self):
+        self.assertEqual(
+            aws_cli_proxy.resolve_max_output_bytes({}),
+            aws_cli_proxy.DEFAULT_MAX_OUTPUT_BYTES,
+        )
+
+    def test_環境変数が数値文字列であればその値を使う(self):
+        self.assertEqual(
+            aws_cli_proxy.resolve_max_output_bytes({aws_cli_proxy.MAX_OUTPUT_BYTES_ENV: "2048"}),
+            2048,
+        )
+
+    def test_環境変数が数値でなければConfigErrorになる(self):
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.resolve_max_output_bytes({aws_cli_proxy.MAX_OUTPUT_BYTES_ENV: "not-a-number"})
+
+    def test_環境変数が0だとConfigErrorになる(self):
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.resolve_max_output_bytes({aws_cli_proxy.MAX_OUTPUT_BYTES_ENV: "0"})
+
+
+class BuildAwsSubprocessEnvTest(unittest.TestCase):
+    """build_aws_subprocess_env のテスト"""
+
+    def test_元の環境変数は残りAWS_PAGERが空文字で追加される(self):
+        env = aws_cli_proxy.build_aws_subprocess_env({"HOME": "test-home-value"})
+        self.assertEqual(env["HOME"], "test-home-value")
+        self.assertEqual(env["AWS_PAGER"], "")
+
+    def test_元にAWS_PAGERがあっても空文字で上書きされる(self):
+        env = aws_cli_proxy.build_aws_subprocess_env({"AWS_PAGER": "less"})
+        self.assertEqual(env["AWS_PAGER"], "")
+
+
+class CreateAwsCommandRunnerTest(unittest.TestCase):
+    """create_aws_command_runner のテスト (実プロセスを起動して検証する)"""
+
+    def _base_env(self) -> Dict[str, str]:
+        return {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+
+    def test_標準出力と標準エラー出力と終了コードを取得できる(self):
+        runner = aws_cli_proxy.create_aws_command_runner(
+            timeout_sec=5, max_output_bytes=1024, env=self._base_env(),
+        )
+        result = runner(["sh", "-c", "echo out; echo err 1>&2; exit 3"])
+        self.assertEqual(result.stdout, "out\n")
+        self.assertEqual(result.stderr, "err\n")
+        self.assertEqual(result.returncode, 3)
+        self.assertFalse(result.truncated)
+
+    def test_一時ディレクトリをcwdとして実行し呼び出し後に削除される(self):
+        runner = aws_cli_proxy.create_aws_command_runner(
+            timeout_sec=5, max_output_bytes=1024, env=self._base_env(),
+        )
+        result = runner(["sh", "-c", "pwd"])
+        cwd = result.stdout.strip()
+        self.assertNotIn(cwd, ("/", os.getcwd()))
+        self.assertFalse(os.path.exists(cwd))
+
+    def test_一時ディレクトリにファイルを書き込める(self):
+        runner = aws_cli_proxy.create_aws_command_runner(
+            timeout_sec=5, max_output_bytes=1024, env=self._base_env(),
+        )
+        result = runner(["sh", "-c", "echo x > f; cat f"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "x\n")
+
+    def test_上限を超える出力はtruncatedがTrueで切り詰め注記を含む(self):
+        runner = aws_cli_proxy.create_aws_command_runner(
+            timeout_sec=5, max_output_bytes=100, env=self._base_env(),
+        )
+        result = runner(["sh", "-c", "head -c 3000 /dev/zero | tr '\\0' a"])
+        self.assertTrue(result.truncated)
+        self.assertIn(aws_cli_proxy.OUTPUT_TRUNCATED_NOTICE.format(limit=100), result.stdout)
+
+    def test_タイムアウトするとCommandExecutionErrorになる(self):
+        runner = aws_cli_proxy.create_aws_command_runner(
+            timeout_sec=1, max_output_bytes=1024, env=self._base_env(),
+        )
+        with self.assertRaises(aws_cli_proxy.CommandExecutionError):
+            runner(["sh", "-c", "sleep 5"])
+
+    def test_存在しないコマンドはCommandExecutionErrorになる(self):
+        runner = aws_cli_proxy.create_aws_command_runner(
+            timeout_sec=5, max_output_bytes=1024, env=self._base_env(),
+        )
+        with self.assertRaises(aws_cli_proxy.CommandExecutionError):
+            runner(["aws-cli-proxy-test-nonexistent-command-xyz"])
+
+    def test_envに渡したAWS_PAGERが空文字のまま子プロセスに見える(self):
+        env = aws_cli_proxy.build_aws_subprocess_env(self._base_env())
+        runner = aws_cli_proxy.create_aws_command_runner(
+            timeout_sec=5, max_output_bytes=1024, env=env,
+        )
+        result = runner(["sh", "-c", "echo [$AWS_PAGER]"])
+        self.assertEqual(result.stdout, "[]\n")
+
+
+class RunAwsTest(unittest.TestCase):
+    """run_aws のテスト"""
+
+    def test_runnerに渡るargvがaws_profile_pの後にargsが続く形になる(self):
+        captured: List[Sequence[str]] = []
+
+        def fake_runner(command: Sequence[str]) -> "aws_cli_proxy.CommandResult":
+            captured.append(command)
+            return aws_cli_proxy.CommandResult(stdout="", stderr="", returncode=0, truncated=False)
+
+        aws_cli_proxy.run_aws("p", ["s3", "ls"], fake_runner)
+        self.assertEqual(captured[0], ["aws", "--profile", "p", "s3", "ls"])
+
+
+class VerifyAwsCliV2Test(unittest.TestCase):
+    """verify_aws_cli_v2 のテスト"""
+
+    def _runner_returning(self, stdout: str = "", stderr: str = "", returncode: int = 0):
+        def runner(command: Sequence[str]) -> "aws_cli_proxy.CommandResult":
+            return aws_cli_proxy.CommandResult(
+                stdout=stdout, stderr=stderr, returncode=returncode, truncated=False,
+            )
+        return runner
+
+    def test_stdoutにv2のバージョン文字列が返るとそのまま返す(self):
+        version = aws_cli_proxy.verify_aws_cli_v2(
+            self._runner_returning(stdout="aws-cli/2.36.42 Python/3.12")
+        )
+        self.assertEqual(version, "aws-cli/2.36.42 Python/3.12")
+
+    def test_stderrにv2のバージョン文字列が返っても同様に返す(self):
+        version = aws_cli_proxy.verify_aws_cli_v2(
+            self._runner_returning(stderr="aws-cli/2.36.42 Python/3.12")
+        )
+        self.assertEqual(version, "aws-cli/2.36.42 Python/3.12")
+
+    def test_v1のバージョン文字列はConfigErrorになる(self):
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.verify_aws_cli_v2(
+                self._runner_returning(stderr="aws-cli/1.46.1 Python/2.7")
+            )
+
+    def test_returncodeが非0だとConfigErrorになる(self):
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.verify_aws_cli_v2(
+                self._runner_returning(stdout="aws-cli/2.36.42 Python/3.12", returncode=1)
+            )
+
+    def test_CommandExecutionErrorはメッセージを引き継いでConfigErrorになる(self):
+        def failing_runner(command: Sequence[str]) -> "aws_cli_proxy.CommandResult":
+            raise aws_cli_proxy.CommandExecutionError("aws コマンドが見つかりません")
+
+        with self.assertRaises(aws_cli_proxy.ConfigError) as ctx:
+            aws_cli_proxy.verify_aws_cli_v2(failing_runner)
+        self.assertIn("aws コマンドが見つかりません", str(ctx.exception))
 
 
 class BuildToolsTest(unittest.TestCase):

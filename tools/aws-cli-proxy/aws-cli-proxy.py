@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
@@ -29,6 +30,12 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "aws-cli-proxy.yml"
 CONFIG_PATH_ENV = "AWS_CLI_PROXY_CONFIG"
 TIMEOUT_ENV = "AWS_CLI_PROXY_TIMEOUT"
 DEFAULT_TIMEOUT_SEC = 30
+MAX_OUTPUT_BYTES_ENV = "AWS_CLI_PROXY_MAX_OUTPUT_BYTES"
+DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
+# 出力を切り詰めたときに付記する文言
+OUTPUT_TRUNCATED_NOTICE = "\n... (出力が上限 {limit} バイトを超えたため切り詰めました。--query や --max-items で絞ってください)"
+# AWS CLI v2 の --version 出力の接頭辞
+AWS_CLI_V2_VERSION_PREFIX = "aws-cli/2."
 BIND_ENV = "AWS_CLI_PROXY_BIND"
 DEFAULT_BIND = "127.0.0.1"
 PORT_ENV = "AWS_CLI_PROXY_PORT"
@@ -67,6 +74,20 @@ RunCommand = Callable[[List[str]], Tuple[str, str, int]]
 
 
 @dataclasses.dataclass(frozen=True)
+class CommandResult:
+    """aws コマンド (argv 全体) の実行結果"""
+
+    stdout: str
+    stderr: str
+    returncode: int
+    truncated: bool
+
+
+# aws コマンド (argv 全体) を実行して結果を返す関数。副作用 (プロセス起動) を外部注入するための型
+AwsCommandRunner = Callable[[Sequence[str]], CommandResult]
+
+
+@dataclasses.dataclass(frozen=True)
 class CredentialEntry:
     """設定ファイルの profiles 配下の 1 エントリ"""
 
@@ -94,6 +115,10 @@ class CredentialFetchError(Exception):
 
 class ValidationError(Exception):
     """MCP リクエストの引数検証失敗 (JSON-RPC の INVALID_PARAMS に対応する)"""
+
+
+class CommandExecutionError(Exception):
+    """aws コマンド実行そのものの失敗 (タイムアウト、コマンド不在)。メッセージはクライアントに返す"""
 
 
 def parse_credential_entry(name: Any, conf: Any) -> CredentialEntry:
@@ -329,6 +354,126 @@ def create_run_command(timeout_sec: int, env: Mapping[str, str]) -> RunCommand:
         return result.stdout, result.stderr, result.returncode
 
     return run_command
+
+
+def build_aws_command(profile: str, args: Sequence[str]) -> List[str]:
+    """指定プロファイルで aws コマンドを実行する argv 全体を組み立てる"""
+    return ["aws", "--profile", profile, *args]
+
+
+def truncate_output(data: bytes, limit: int) -> Tuple[str, bool]:
+    """バイト列を上限バイト数で切り詰めて文字列に変換する
+
+    上限以下ならそのまま decode し、超える場合は先頭 limit バイトを decode したうえで
+    切り詰めた旨の注記を付ける。切り詰めにより UTF-8 のマルチバイト文字が境界で
+    途切れても errors="replace" で置換文字に変換し、例外にはしない。
+    """
+    if len(data) <= limit:
+        return data.decode("utf-8", errors="replace"), False
+
+    text = data[:limit].decode("utf-8", errors="replace")
+    return text + OUTPUT_TRUNCATED_NOTICE.format(limit=limit), True
+
+
+def resolve_max_output_bytes(environ: Mapping[str, str]) -> int:
+    """環境変数から aws コマンド出力の上限バイト数を決定する
+
+    環境変数が設定されていれば整数に変換して返し、無ければ既定値を返す。
+    整数に変換できない、または 0 以下の場合は ConfigError を送出する。
+    """
+    configured = environ.get(MAX_OUTPUT_BYTES_ENV)
+    if configured is None:
+        return DEFAULT_MAX_OUTPUT_BYTES
+
+    try:
+        max_output_bytes = int(configured)
+    except ValueError:
+        raise ConfigError(f"{MAX_OUTPUT_BYTES_ENV} は整数である必要があります: {configured}")
+
+    if max_output_bytes <= 0:
+        raise ConfigError(f"{MAX_OUTPUT_BYTES_ENV} は正の整数である必要があります: {configured}")
+
+    return max_output_bytes
+
+
+def build_aws_subprocess_env(environ: Mapping[str, str]) -> Dict[str, str]:
+    """aws サブプロセスに渡す環境変数を組み立てる
+
+    pager の起動を防ぐため AWS_PAGER を空文字列で上書きする。
+    """
+    env = dict(environ)
+    env["AWS_PAGER"] = ""
+    return env
+
+
+def create_aws_command_runner(
+    timeout_sec: int, max_output_bytes: int, env: Mapping[str, str]
+) -> AwsCommandRunner:
+    """aws コマンドの argv 全体を実行する AwsCommandRunner を作る
+
+    呼び出しごとに一時ディレクトリを作り、その中を cwd として実行する。
+    一時ディレクトリの生成と破棄という副作用はこの関数の内側に閉じ、
+    呼び出し側は結果 (CommandResult) のみを受け取る。
+    """
+    def run(command: Sequence[str]) -> CommandResult:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            try:
+                result = subprocess.run(
+                    list(command),
+                    capture_output=True,
+                    text=False,
+                    timeout=timeout_sec,
+                    shell=False,
+                    stdin=subprocess.DEVNULL,
+                    cwd=tmp_dir,
+                    env=dict(env),
+                )
+            except subprocess.TimeoutExpired:
+                raise CommandExecutionError(f"コマンド実行がタイムアウトしました ({timeout_sec}秒)")
+            except FileNotFoundError:
+                raise CommandExecutionError(
+                    "aws コマンドが見つかりません。AWS CLI v2 をインストールしてください"
+                )
+
+        stdout, stdout_truncated = truncate_output(result.stdout, max_output_bytes)
+        stderr, stderr_truncated = truncate_output(result.stderr, max_output_bytes)
+        return CommandResult(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=result.returncode,
+            truncated=stdout_truncated or stderr_truncated,
+        )
+
+    return run
+
+
+def run_aws(profile: str, args: Sequence[str], runner: AwsCommandRunner) -> CommandResult:
+    """指定プロファイルで aws コマンドの argv を組み立てて runner で実行する"""
+    return runner(build_aws_command(profile, args))
+
+
+def verify_aws_cli_v2(runner: AwsCommandRunner) -> str:
+    """aws --version を実行し AWS CLI v2 であることを確認してバージョン文字列の先頭行を返す
+
+    AWS CLI v1 はバージョン文字列を標準エラー出力に出すため、stdout / stderr の両方を確認する。
+    実行そのものの失敗 (CommandExecutionError) はメッセージを引き継いで ConfigError に変換する。
+    """
+    try:
+        result = runner(["aws", "--version"])
+    except CommandExecutionError as e:
+        raise ConfigError(str(e))
+
+    output = result.stdout or result.stderr
+    first_line = output.splitlines()[0].strip() if output else ""
+
+    is_v2 = result.returncode == 0 and (
+        result.stdout.startswith(AWS_CLI_V2_VERSION_PREFIX)
+        or result.stderr.startswith(AWS_CLI_V2_VERSION_PREFIX)
+    )
+    if not is_v2:
+        raise ConfigError(f"AWS CLI v2 が必要です (aws --version の出力: {first_line})")
+
+    return first_line
 
 
 def build_tools(entries: List[CredentialEntry]) -> List[Dict[str, Any]]:
