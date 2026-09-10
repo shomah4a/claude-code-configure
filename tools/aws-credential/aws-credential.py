@@ -16,7 +16,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Tuple
+from urllib.parse import urlsplit
 from wsgiref.simple_server import make_server
 
 import yaml
@@ -34,6 +35,9 @@ DEFAULT_BIND = "127.0.0.1"
 PORT_ENV = "AWS_CREDENTIAL_PROXY_PORT"
 DEFAULT_PORT = 30722
 TOOL_NAME = "aws_get_credentials"
+ALLOWED_HOSTS_ENV = "AWS_CREDENTIAL_PROXY_ALLOWED_HOSTS"
+# loopback を指すホスト名。Host / Origin ヘッダのホスト部がこれ以外なら 403 (DNS リバインディング対策)
+DEFAULT_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 # aws configure export-credentials --format process の出力仕様バージョン
 EXPECTED_PROCESS_FORMAT_VERSION = 1
@@ -138,8 +142,14 @@ def load_config(config_path: Path, report: Callable[[str], None]) -> List[Creden
     if not config_path.exists():
         raise ConfigError(f"設定ファイルが見つかりません: {config_path}")
 
-    with open(config_path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+    except OSError as e:
+        raise ConfigError(f"設定ファイルを読み込めません: {config_path} ({e.strerror})")
+    except yaml.YAMLError:
+        # YAMLError のメッセージは設定ファイルの断片を含むため、パスのみを伝える
+        raise ConfigError(f"設定ファイルの YAML 解析に失敗しました: {config_path}")
 
     return parse_entries(raw, report)
 
@@ -503,10 +513,63 @@ def handle_jsonrpc_request(
         )
 
 
+def extract_host_name(host_header: str) -> str:
+    """Host ヘッダ値、または Origin の host[:port] 部分からポートを除いたホスト名を返す
+
+    IPv6 表記 ([::1]:30722) は ] の後ろのポートだけを除き [::1] を返す。
+    """
+    value = host_header.strip()
+
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing == -1:
+            return value
+        return value[:closing + 1]
+
+    if ":" in value:
+        return value.rsplit(":", 1)[0]
+    return value
+
+
+def extract_origin_host(origin_header: str) -> str:
+    """Origin ヘッダ (scheme://host[:port]) からホスト名を取り出す
+
+    パースできない、または netloc が空の場合は空文字列を返す。
+    """
+    try:
+        netloc = urlsplit(origin_header).netloc
+    except ValueError:
+        return ""
+
+    if not netloc:
+        return ""
+    return extract_host_name(netloc)
+
+
+def is_request_from_allowed_host(environ: Dict[str, Any], allowed_hosts: FrozenSet[str]) -> bool:
+    """DNS リバインディング対策として Host / Origin ヘッダを検証する
+
+    Origin ヘッダが無い場合は Host のみで判定する (Claude Code の MCP クライアントは Origin を送らないと想定)。
+    """
+    host_header = environ.get("HTTP_HOST")
+    if not host_header or extract_host_name(host_header) not in allowed_hosts:
+        return False
+
+    origin_header = environ.get("HTTP_ORIGIN")
+    if not origin_header:
+        return True
+
+    if origin_header == "null":
+        return False
+
+    return extract_origin_host(origin_header) in allowed_hosts
+
+
 def create_application(
     entries: List[CredentialEntry],
     run_command: RunCommand,
     report: Callable[[str], None],
+    allowed_hosts: FrozenSet[str],
 ) -> Callable[[Dict[str, Any], Callable[..., None]], List[bytes]]:
     """WSGI アプリケーションを組み立てる
 
@@ -519,6 +582,14 @@ def create_application(
         if environ["REQUEST_METHOD"] != "POST":
             start_response("405 Method Not Allowed", [("Content-Type", "text/plain")])
             return [b"Method Not Allowed"]
+
+        if not is_request_from_allowed_host(environ, allowed_hosts):
+            report(
+                "許可されていない Host/Origin からのリクエストを拒否しました: "
+                f"host={environ.get('HTTP_HOST', '')!r}, origin={environ.get('HTTP_ORIGIN', '')!r}"
+            )
+            start_response("403 Forbidden", [("Content-Type", "text/plain")])
+            return [b"Forbidden"]
 
         content_type = environ.get("CONTENT_TYPE", "")
         if not content_type.startswith("application/json"):
@@ -537,7 +608,14 @@ def create_application(
                 f"リクエストボディを JSON として解釈できません (位置 {e.pos})"
             )
         else:
-            response = handle_jsonrpc_request(request, entries, tools, run_command, report)
+            if isinstance(request, dict):
+                response = handle_jsonrpc_request(request, entries, tools, run_command, report)
+            else:
+                response = create_error_response(
+                    None,
+                    INVALID_REQUEST,
+                    "リクエストは JSON オブジェクトである必要があります"
+                )
 
         response_body = json.dumps(response).encode("utf-8")
         start_response("200 OK", [
@@ -577,6 +655,19 @@ def resolve_port(environ: Mapping[str, str]) -> int:
         raise ConfigError(f"{PORT_ENV} は整数である必要があります: {configured}")
 
 
+def resolve_allowed_hosts(environ: Mapping[str, str]) -> FrozenSet[str]:
+    """環境変数から許可する Host/Origin のホスト名集合を決定する
+
+    環境変数が設定されていれば DEFAULT_ALLOWED_HOSTS に追加する。設定されていなければ DEFAULT_ALLOWED_HOSTS のみ。
+    """
+    configured = environ.get(ALLOWED_HOSTS_ENV)
+    if configured is None:
+        return DEFAULT_ALLOWED_HOSTS
+
+    additional = {host.strip() for host in configured.split(",") if host.strip()}
+    return frozenset(DEFAULT_ALLOWED_HOSTS | additional)
+
+
 def main() -> int:
     """メイン関数"""
     environ = os.environ
@@ -592,6 +683,7 @@ def main() -> int:
 
     run_command = create_run_command(timeout_sec, build_subprocess_env(environ))
     bind = resolve_bind(environ)
+    allowed_hosts = resolve_allowed_hosts(environ)
 
     # tool-launcher が stdout を pipe で受けるため、ブロックバッファリングで起動メッセージが滞留しないよう flush する
     print("AWS Credential MCP Proxy Server", flush=True)
@@ -599,11 +691,13 @@ def main() -> int:
     print(f"Server: {SERVER_NAME} v{SERVER_VERSION}", flush=True)
     print(f"設定ファイル: {config_path}", flush=True)
     print(f"登録された name: {', '.join(entry.name for entry in entries)}", flush=True)
+    print(f"許可する Host: {', '.join(sorted(allowed_hosts))}", flush=True)
     print(f"Bind: {bind}:{port}", flush=True)
     print(flush=True)
     print("サーバーを起動しています...", flush=True)
 
-    with make_server(bind, port, create_application(entries, run_command, report_to_stderr)) as httpd:
+    application = create_application(entries, run_command, report_to_stderr, allowed_hosts)
+    with make_server(bind, port, application) as httpd:
         print(f"サーバーが起動しました: http://{bind}:{port}", flush=True)
         print("Ctrl+C で停止します", flush=True)
         try:

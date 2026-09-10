@@ -158,6 +158,26 @@ class LoadConfigTest(unittest.TestCase):
                 [aws_credential.CredentialEntry(name="dev", profile="my-dev-profile")],
             )
 
+    def test_YAML構文エラーの設定ファイルはConfigErrorになる(self):
+        messages: List[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "aws-credential.yml"
+            # インデントが不正な YAML (マッピングとリストの混在) を書く
+            config_path.write_text(
+                "credentials:\n  dev:\n  profile: my-dev-profile\n - broken\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(aws_credential.ConfigError):
+                aws_credential.load_config(config_path, messages.append)
+
+    def test_設定ファイルのパスがディレクトリだとConfigErrorになる(self):
+        messages: List[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "aws-credential.yml"
+            config_path.mkdir()
+            with self.assertRaises(aws_credential.ConfigError):
+                aws_credential.load_config(config_path, messages.append)
+
 
 class ResolveConfigPathTest(unittest.TestCase):
     """resolve_config_path のテスト"""
@@ -645,6 +665,44 @@ class HandleJsonrpcRequestTest(unittest.TestCase):
         self.assertTrue(any(DUMMY_ACCESS_KEY_ID in message for message in messages))
 
 
+class ExtractHostNameTest(unittest.TestCase):
+    """extract_host_name のテスト"""
+
+    def test_ポートありのホスト名からポートを除く(self):
+        self.assertEqual(aws_credential.extract_host_name("localhost:30722"), "localhost")
+
+    def test_ポートなしのホスト名はそのまま返す(self):
+        self.assertEqual(aws_credential.extract_host_name("localhost"), "localhost")
+
+    def test_IPv6アドレスはポートだけを除いて角括弧付きで返す(self):
+        self.assertEqual(aws_credential.extract_host_name("[::1]:30722"), "[::1]")
+
+    def test_ポートなしのIPv6アドレスはそのまま返す(self):
+        self.assertEqual(aws_credential.extract_host_name("[::1]"), "[::1]")
+
+    def test_前後の空白を除去する(self):
+        self.assertEqual(aws_credential.extract_host_name("  localhost:30722  "), "localhost")
+
+
+class ExtractOriginHostTest(unittest.TestCase):
+    """extract_origin_host のテスト"""
+
+    def test_スキームとポートを含むOriginからホスト名を取り出す(self):
+        self.assertEqual(aws_credential.extract_origin_host("http://localhost:30722"), "localhost")
+
+    def test_ポートなしのOriginからホスト名を取り出す(self):
+        self.assertEqual(aws_credential.extract_origin_host("https://localhost"), "localhost")
+
+    def test_IPv6のOriginからホスト名を取り出す(self):
+        self.assertEqual(aws_credential.extract_origin_host("http://[::1]:30722"), "[::1]")
+
+    def test_netlocが空のOriginは空文字列を返す(self):
+        self.assertEqual(aws_credential.extract_origin_host("not-a-url"), "")
+
+    def test_nullという文字列は空文字列を返す(self):
+        self.assertEqual(aws_credential.extract_origin_host("null"), "")
+
+
 class WsgiApplicationTest(unittest.TestCase):
     """create_application が返す WSGI アプリケーションのテスト"""
 
@@ -660,23 +718,38 @@ class WsgiApplicationTest(unittest.TestCase):
             }), "", 0)
         return ("ap-northeast-1", "", 0)
 
+    def _create_app(self, messages: List[str], allowed_hosts=None):
+        return aws_credential.create_application(
+            self._entries(), self._run_command, messages.append,
+            allowed_hosts if allowed_hosts is not None else aws_credential.DEFAULT_ALLOWED_HOSTS,
+        )
+
     def _call_app(
         self, app, body: Optional[bytes], method: str = "POST",
         content_type: str = "application/json",
+        host: Optional[str] = "localhost:30722", origin: Optional[str] = None,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        """WSGI アプリを直接呼び出し、(status, レスポンスJSON) を返すテスト用ヘルパー"""
+        """WSGI アプリを直接呼び出し、(status, レスポンスJSON) を返すテスト用ヘルパー
+
+        host / origin は既定で正規のループバック向けの値を入れ、引数で上書きできるようにする。
+        """
         captured_status: List[str] = []
 
         def start_response(status: str, headers: List[Tuple[str, str]]) -> None:
             captured_status.append(status)
 
         body_bytes = body if body is not None else b""
-        environ = {
+        environ: Dict[str, Any] = {
             "REQUEST_METHOD": method,
             "CONTENT_TYPE": content_type,
             "CONTENT_LENGTH": str(len(body_bytes)),
             "wsgi.input": io.BytesIO(body_bytes),
         }
+        if host is not None:
+            environ["HTTP_HOST"] = host
+        if origin is not None:
+            environ["HTTP_ORIGIN"] = origin
+
         result = app(environ, start_response)
         response_body = b"".join(result)
         try:
@@ -687,27 +760,34 @@ class WsgiApplicationTest(unittest.TestCase):
 
     def test_GETは405になる(self):
         messages: List[str] = []
-        app = aws_credential.create_application(self._entries(), self._run_command, messages.append)
+        app = self._create_app(messages)
         status, _parsed = self._call_app(app, None, method="GET")
         self.assertTrue(status.startswith("405"))
 
     def test_Content_Typeがtext_plainだと415になる(self):
         messages: List[str] = []
-        app = aws_credential.create_application(self._entries(), self._run_command, messages.append)
+        app = self._create_app(messages)
         status, _parsed = self._call_app(app, b"{}", content_type="text/plain")
         self.assertTrue(status.startswith("415"))
 
     def test_不正なJSON本文は200でPARSE_ERRORのJSON_RPCエラーになる(self):
         messages: List[str] = []
-        app = aws_credential.create_application(self._entries(), self._run_command, messages.append)
+        app = self._create_app(messages)
         status, parsed = self._call_app(app, b"not-json")
         self.assertTrue(status.startswith("200"))
         self.assertEqual(parsed["error"]["code"], aws_credential.PARSE_ERROR)
         self.assertIsNone(parsed["id"])
 
+    def test_JSON配列の本文はINVALID_REQUESTになる(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, parsed = self._call_app(app, b"[1, 2, 3]")
+        self.assertTrue(status.startswith("200"))
+        self.assertEqual(parsed["error"]["code"], aws_credential.INVALID_REQUEST)
+
     def test_正常なtools_callは200でcontentを返す(self):
         messages: List[str] = []
-        app = aws_credential.create_application(self._entries(), self._run_command, messages.append)
+        app = self._create_app(messages)
         body = json.dumps({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": aws_credential.TOOL_NAME, "arguments": {"name": "dev"}},
@@ -715,6 +795,74 @@ class WsgiApplicationTest(unittest.TestCase):
         status, parsed = self._call_app(app, body)
         self.assertTrue(status.startswith("200"))
         self.assertIn("content", parsed["result"])
+
+    def test_Hostがlocalhostなら通る(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(app, b"{}", host="localhost:30722")
+        self.assertTrue(status.startswith("200"))
+
+    def test_Hostが127_0_0_1なら通る(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(app, b"{}", host="127.0.0.1:30722")
+        self.assertTrue(status.startswith("200"))
+
+    def test_HostがIPv6ループバックなら通る(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(app, b"{}", host="[::1]:30722")
+        self.assertTrue(status.startswith("200"))
+
+    def test_Hostが許可されていないホストだと403になる(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(app, b"{}", host="attacker.example:30722")
+        self.assertTrue(status.startswith("403"))
+
+    def test_Hostヘッダが無いと403になる(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(app, b"{}", host=None)
+        self.assertTrue(status.startswith("403"))
+
+    def test_Originが許可されていないホストだとHostがlocalhostでも403になる(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(
+            app, b"{}", host="localhost:30722", origin="http://attacker.example:30722",
+        )
+        self.assertTrue(status.startswith("403"))
+
+    def test_Originがlocalhostなら通る(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(
+            app, b"{}", host="localhost:30722", origin="http://localhost:30722",
+        )
+        self.assertTrue(status.startswith("200"))
+
+    def test_Originがnullだと403になる(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(app, b"{}", host="localhost:30722", origin="null")
+        self.assertTrue(status.startswith("403"))
+
+    def test_環境変数で追加したホストは通る(self):
+        messages: List[str] = []
+        allowed_hosts = aws_credential.resolve_allowed_hosts(
+            {aws_credential.ALLOWED_HOSTS_ENV: "host.docker.internal"}
+        )
+        app = self._create_app(messages, allowed_hosts=allowed_hosts)
+        status, _parsed = self._call_app(app, b"{}", host="host.docker.internal:30722")
+        self.assertTrue(status.startswith("200"))
+
+    def test_403のときreportにメッセージが渡る(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        self._call_app(app, b"{}", host="attacker.example:30722")
+        self.assertEqual(len(messages), 1)
+        self.assertIn("attacker.example", messages[0])
 
 
 class ResolveBindTest(unittest.TestCase):
@@ -740,6 +888,24 @@ class ResolvePortTest(unittest.TestCase):
     def test_環境変数が数値でなければConfigErrorになる(self):
         with self.assertRaises(aws_credential.ConfigError):
             aws_credential.resolve_port({aws_credential.PORT_ENV: "not-a-number"})
+
+
+class ResolveAllowedHostsTest(unittest.TestCase):
+    """resolve_allowed_hosts のテスト"""
+
+    def test_環境変数が無ければ既定のホスト集合を使う(self):
+        self.assertEqual(
+            aws_credential.resolve_allowed_hosts({}),
+            aws_credential.DEFAULT_ALLOWED_HOSTS,
+        )
+
+    def test_環境変数のホストを既定のホスト集合に追加する(self):
+        allowed_hosts = aws_credential.resolve_allowed_hosts(
+            {aws_credential.ALLOWED_HOSTS_ENV: "host.docker.internal, example.internal"}
+        )
+        self.assertIn("host.docker.internal", allowed_hosts)
+        self.assertIn("example.internal", allowed_hosts)
+        self.assertIn("localhost", allowed_hosts)
 
 
 if __name__ == "__main__":
