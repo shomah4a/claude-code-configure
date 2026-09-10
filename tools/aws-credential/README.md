@@ -113,7 +113,7 @@ bridge network 構成に変更する場合は `AWS_CREDENTIAL_PROXY_BIND` で待
 `aws` コマンドは以下の条件で実行します。
 
 - 標準入力は閉じて実行します (対話入力でハングしないようにするため)
-- 環境変数は `HOME`, `PATH`, `LANG`, `LC_ALL` のみを引き継ぎます。サーバーを起動したシェルの `AWS_*` 環境変数は渡しません。`HTTPS_PROXY` や `AWS_CA_BUNDLE` も渡さないため、プロキシや社内 CA を必要とする環境では SSO / assume-role の解決に失敗します
+- サーバーを起動したシェルの環境変数をそのまま引き継ぎます。`credential_process` に aws-vault 等を使うプロファイルでは、キーリングのバックエンド指定 (`AWS_VAULT_BACKEND` 等) がサーバーの環境に必要です。`--profile` を明示して実行するため、シェルの `AWS_ACCESS_KEY_ID` 等が取得結果に混ざることはありませんが、`AWS_CONFIG_FILE` や `AWS_REGION` 等の設定系変数は解決結果に影響します
 - サーバーは単一スレッドで動作します。`aws` コマンドの実行中は他のリクエストを処理しません
 
 ## セキュリティ考慮事項

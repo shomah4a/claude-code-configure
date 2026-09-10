@@ -42,9 +42,6 @@ DEFAULT_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 # aws configure export-credentials --format process の出力仕様バージョン
 EXPECTED_PROCESS_FORMAT_VERSION = 1
 
-# aws サブプロセスへ引き継ぐ環境変数。AWS_* を含む他の変数は渡さず、起動シェルの環境で解決結果が変わらないようにする
-SUBPROCESS_ENV_KEYS = ("HOME", "PATH", "LANG", "LC_ALL")
-
 # name と profile に共通。先頭の - を拒否して subprocess へのオプション注入を防ぐ
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -282,11 +279,6 @@ def fetch_credentials(profile: str, run_command: RunCommand, report: Callable[[s
     credentials = parse_export_credentials_output(stdout)
     region = fetch_region(profile, run_command, report)
     return build_env_mapping(credentials, region)
-
-
-def build_subprocess_env(environ: Mapping[str, str]) -> Dict[str, str]:
-    """aws サブプロセスへ引き継ぐ環境変数だけを抽出する"""
-    return {key: environ[key] for key in SUBPROCESS_ENV_KEYS if key in environ}
 
 
 def resolve_timeout_sec(environ: Mapping[str, str]) -> int:
@@ -681,7 +673,9 @@ def main() -> int:
         print(f"設定エラー: {e}", file=sys.stderr)
         return 1
 
-    run_command = create_run_command(timeout_sec, build_subprocess_env(environ))
+    # credential_process (aws-vault 等) がキーリングやエージェントの環境変数を必要とするため、
+    # サーバーの環境をそのまま aws に引き継ぐ。--profile を明示しているため AWS_ACCESS_KEY_ID 等による取り違えは起きない
+    run_command = create_run_command(timeout_sec, environ)
     bind = resolve_bind(environ)
     allowed_hosts = resolve_allowed_hosts(environ)
 

@@ -409,23 +409,6 @@ class FetchCredentialsTest(unittest.TestCase):
         self.assertNotIn(DUMMY_SECRET_ACCESS_KEY, str(ctx.exception))
 
 
-class BuildSubprocessEnvTest(unittest.TestCase):
-    """build_subprocess_env のテスト"""
-
-    def test_許可された変数のみ残りAWS変数は落ちる(self):
-        env = aws_credential.build_subprocess_env({
-            "HOME": "/home/test",
-            "PATH": "/usr/bin:/bin",
-            "AWS_ACCESS_KEY_ID": DUMMY_ACCESS_KEY_ID,
-            "AWS_PROFILE": "dev",
-        })
-        self.assertEqual(env, {"HOME": "/home/test", "PATH": "/usr/bin:/bin"})
-
-    def test_存在しないキーは含まれない(self):
-        env = aws_credential.build_subprocess_env({"HOME": "/home/test"})
-        self.assertEqual(env, {"HOME": "/home/test"})
-
-
 class ResolveTimeoutSecTest(unittest.TestCase):
     """resolve_timeout_sec のテスト"""
 
@@ -464,17 +447,16 @@ class CreateRunCommandTest(unittest.TestCase):
         with self.assertRaises(aws_credential.CredentialFetchError):
             run_command(["sh", "-c", "sleep 5"])
 
-    def test_envに渡した変数だけが子プロセスに見える(self):
-        source_environ = {
+    def test_envに渡した変数がそのまま子プロセスに見える(self):
+        env = {
             "HOME": "test-home-value",
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "AWS_ACCESS_KEY_ID": DUMMY_ACCESS_KEY_ID,
+            "AWS_VAULT_BACKEND": "file",
         }
-        env = aws_credential.build_subprocess_env(source_environ)
         run_command = aws_credential.create_run_command(timeout_sec=5, env=env)
-        stdout, _stderr, code = run_command(["sh", "-c", "echo $HOME-$AWS_ACCESS_KEY_ID"])
+        stdout, _stderr, code = run_command(["sh", "-c", "echo $HOME-$AWS_VAULT_BACKEND"])
         self.assertEqual(code, 0)
-        self.assertEqual(stdout, "test-home-value-\n")
+        self.assertEqual(stdout, "test-home-value-file\n")
 
 
 class BuildToolsTest(unittest.TestCase):
