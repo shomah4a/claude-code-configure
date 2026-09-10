@@ -15,7 +15,7 @@ __pycache__/
 
 # venv
 tools/mcp-proxy/venv/
-tools/aws-credential/venv/
+tools/aws-cli-proxy/venv/
 
-# aws-credential の取得元設定 (tmpl をコピーして作る。コミットしない)
-tools/aws-credential/aws-credential.yml
+# aws-cli-proxy の設定 (tmpl をコピーして作る。コミットしない)
+tools/aws-cli-proxy/aws-cli-proxy.yml

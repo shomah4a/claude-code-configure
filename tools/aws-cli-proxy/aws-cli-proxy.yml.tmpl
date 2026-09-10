@@ -1,13 +1,16 @@
-# aws-credential MCP サーバーの取得元設定
+# aws-cli-proxy MCP サーバーの設定
 #
-# このファイルを aws-credential.yml にコピーして編集してください (aws-credential.yml は git 管理外)。
-#   cp aws-credential.yml.tmpl aws-credential.yml
+# このファイルを aws-cli-proxy.yml にコピーして編集してください (aws-cli-proxy.yml は git 管理外)。
+#   cp aws-cli-proxy.yml.tmpl aws-cli-proxy.yml
 #
-# credentials 配下のキーが MCP ツール aws_get_credentials の name 引数になります。
+# profiles 配下のキーが MCP ツール aws_run の name 引数になります。
 # profile はホスト側 ~/.aws/config に定義されたプロファイル名です。
 # name / profile はいずれも英数字で始まり、英数字と . _ - のみで構成してください。
-credentials:
-  dev:
-    profile: my-dev-profile
-  # staging:
-  #   profile: my-staging-profile
+#
+# 登録するプロファイルは読み取り専用の IAM ロールに限ってください。
+# コンテナ内の Claude はここに登録したプロファイルの IAM 権限の範囲で任意の aws 操作 (書き込みを含む) ができます。
+profiles:
+  dev-readonly:
+    profile: my-dev-readonly-profile
+  # staging-readonly:
+  #   profile: my-staging-readonly-profile
