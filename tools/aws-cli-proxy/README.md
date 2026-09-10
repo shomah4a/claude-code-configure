@@ -97,9 +97,10 @@ bridge network 構成に変更する場合は `AWS_CLI_PROXY_BIND` で待ち受�
 
 | 種別 | 内容 | 理由 |
 |---|---|---|
-| グローバルオプション | `--profile`, `--debug`, `--endpoint-url`, `--no-verify-ssl`, `--ca-bundle` (省略形 `--prof` や `--profile=x` 形式を含む) | プロファイルの上書き、デバッグログへのセッショントークンの出力、署名付きリクエストの送信先の差し替えを防ぐ |
-| サブコマンド | `configure`, `sso`, `help` (引数のどの位置にあっても) | ホストの `~/.aws/config` の書き換え (`configure set credential_process ...` はホスト上の任意コマンド実行につながる)、認証情報の出力 (`configure export-credentials`)、SSO トークンの削除、ブラウザ・pager の起動を防ぐ。`aws configure list-profiles` も使えません |
-| ホストのファイル参照 | `file://` / `fileb://` を含む値、`/` `~` `./` `../` で始まる値、`/../` を含む値、`..` | ホストのファイルの読み書きを防ぐ |
+| グローバルオプション | `--profile`, `--debug`, `--endpoint-url`, `--no-verify-ssl`, `--ca-bundle`, `--help` (省略形 `--prof` や `--profile=x` 形式を含む) | プロファイルの上書き、デバッグログへのセッショントークンの出力、署名付きリクエストの送信先の差し替え、ヘルプ描画による groff / pager の起動を防ぐ |
+| セパレータ | `--` | 以降が検証の対象外になるのを防ぐ (aws 側でも受理されない) |
+| サブコマンド | `configure`, `sso`, `help`, `history` (引数のどの位置にあっても) | ホストの `~/.aws/config` の書き換え (`configure set credential_process ...` はホスト上の任意コマンド実行につながる)、認証情報の出力 (`configure export-credentials`)、SSO トークンの削除、ブラウザ・pager の起動、コマンド履歴 (`~/.aws/cli/history`、過去の API レスポンスを含む) の出力を防ぐ。`aws configure list-profiles` も使えません |
+| ホストのファイル参照 | `file://` / `fileb://` を含む値、`/` `~` `./` `../` で始まる値、`/../` を含む値、`..`。`--opt=値` 形式では `=` 以降の値部分にも同じ規則を適用 | ホストのファイルの読み書きを防ぐ |
 
 先頭が `/` の値は一律に拒否するため、CloudWatch Logs のロググループ名 (`/aws/lambda/...`) や SSM パラメータ名 (`/prod/db/host`) のようなパス型の AWS 識別子は指定できません。これは誤検知を受容した仕様です。
 
@@ -121,9 +122,10 @@ UTF-8 として解釈できないバイト列は置換文字に変換して返�
 
 ## セキュリティ考慮事項
 
-- **認証情報はコンテナに渡りません。** 認証情報の解決はホストの `aws` プロセス内で完結します。`configure export-credentials` と `--debug` を拒否しているため、ツール経由で認証情報を取り出す経路は塞いでいます。ただし `sts get-session-token` や `sts assume-role`、`ecr get-login-password` のように、IAM 権限の範囲内で AWS API から取得できる資格情報は防ぎません
+- **認証情報はコンテナに渡りません。** 認証情報の解決はホストの `aws` プロセス内で完結します。`configure export-credentials`、`history`、`--debug` を拒否しているため、ツール経由でホスト側の認証情報を取り出す既知の経路は塞いでいます。ただし `sts get-session-token` や `sts assume-role`、`ecr get-login-password` のように、IAM 権限の範囲内で AWS API から取得できる資格情報は防ぎません
 - **プロファイルは設定ファイルのものに固定されます。** `--profile` とその省略形は argparse による事前パースで検出して拒否します。`configure set` によるホスト設定の書き換えも拒否します
 - **全プロジェクト・全セッションで有効になります。** `mcp-servers.json` は managed MCP 設定 (`/etc/claude-code/managed-mcp.json`) としてコンテナにマウントされるため、AWS を使わないプロジェクトのセッションからも呼び出せます。`--permission-mode auto` と組み合わせた場合、外部コンテンツ (Web ページ、Issue 本文、PR コメント等) に埋め込まれた指示によって `aws_run` が呼ばれ、登録プロファイルの IAM 権限の範囲で操作されるリスクがあります。登録するプロファイルを読み取り専用に限ることが前提です
+- **ホスト側の `~/.aws/cli/alias` は検出できません。** AWS CLI の alias は任意の名前を第一引数として受け付け、`!` で始まる alias はシェルコマンドとして実行されます。サーバーは alias 名を知り得ないため拒否できません。ホストで alias を定義している場合は、本サーバーを使わないか alias ファイルを退避してください
 - **拒否リスト方式の限界。** 引数検証は拒否対象を列挙する方式のため、将来の AWS CLI で追加されるグローバルオプションやサブコマンドは自動では拒否されません。AWS CLI を更新した際は拒否対象の見直しが必要です
 - **認証は行いません。** 既定で loopback (`127.0.0.1`) にのみ bind するため、同一ホスト上のプロセスからのみ到達できます。`AWS_CLI_PROXY_BIND` を `0.0.0.0` 等に変更すると、ネットワーク上の任意のホストから無認証で `aws` を実行できる状態になります
 - `Host` ヘッダと (存在する場合) `Origin` ヘッダのホスト名が loopback または `AWS_CLI_PROXY_ALLOWED_HOSTS` に無いリクエスト、および `Host` が重複してカンマ結合されたリクエストは 403 で拒否します。ホスト上のブラウザで開いたページから DNS リバインディングで到達する経路への対策で、同一ホスト上の非ブラウザプロセスからの直接アクセスは防ぎません

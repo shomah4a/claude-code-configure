@@ -519,6 +519,20 @@ class FindDeniedOptionTest(unittest.TestCase):
         )
 
 
+class ExtractConnectedValueTest(unittest.TestCase):
+    """extract_connected_value のテスト"""
+
+    def test_該当しない要素はNoneを返す(self):
+        self.assertIsNone(aws_cli_proxy.extract_connected_value("s3"))
+        self.assertIsNone(aws_cli_proxy.extract_connected_value("--query"))
+
+    def test_イコールを1つ含む要素は等号以降を返す(self):
+        self.assertEqual(aws_cli_proxy.extract_connected_value("--a=b"), "b")
+
+    def test_イコールを複数含む要素は最初のイコール以降をまとめて返す(self):
+        self.assertEqual(aws_cli_proxy.extract_connected_value("--a=b=c"), "b=c")
+
+
 class ValidateAwsArgsTest(unittest.TestCase):
     """validate_aws_args のテスト"""
 
@@ -571,10 +585,14 @@ class ValidateAwsArgsTest(unittest.TestCase):
     def test_ca_bundleオプション指定は拒否される(self):
         self._assert_denied(["--ca-bundle", "x.pem", "s3", "ls"], "指定できないオプション")
 
-    def test_セパレータ以降のprofileはargparseの実挙動により位置引数として通る(self):
-        # parse_known_args は "--" 以降の要素をオプションではなく位置引数として扱うため検出対象にならない。
-        # AWS CLI 側も同じ argparse の規則で "--" 以降を位置引数として扱うため、profile の上書きにはならない
-        aws_cli_proxy.validate_aws_args(["s3", "ls", "--", "--profile"])
+    def test_セパレータ単体の要素は拒否される(self):
+        self._assert_denied(["s3", "ls", "--", "--profile"], "-- は指定できません")
+
+    def test_helpフラグ指定は拒否される(self):
+        self._assert_denied(["s3", "ls", "--help"], "指定できないオプション")
+
+    def test_helpフラグの省略形hでの指定は拒否される(self):
+        self._assert_denied(["s3", "ls", "--h"], "指定できないオプション")
 
     def test_configureサブコマンド単独指定は拒否される(self):
         self._assert_denied(["configure", "list-profiles"], "指定できないサブコマンド")
@@ -590,6 +608,9 @@ class ValidateAwsArgsTest(unittest.TestCase):
 
     def test_helpが末尾にあっても拒否される(self):
         self._assert_denied(["s3", "help"], "指定できないサブコマンド")
+
+    def test_historyサブコマンド指定は拒否される(self):
+        self._assert_denied(["history", "list"], "指定できないサブコマンド")
 
     def test_s3cpのコピー先が絶対パスだと拒否される(self):
         self._assert_denied(["s3", "cp", "s3://b/k", "/tmp/x"], "ホストのファイルを参照する引数")
@@ -628,6 +649,24 @@ class ValidateAwsArgsTest(unittest.TestCase):
 
     def test_相対パスの出力ファイル名は通る(self):
         aws_cli_proxy.validate_aws_args(["s3", "cp", "s3://b/k", "out.json"])
+
+    def test_イコール連結の絶対パスオプションは拒否される(self):
+        self._assert_denied(
+            ["cloudformation", "deploy", "--template-file=/etc/passwd"],
+            "ホストのファイルを参照する引数",
+        )
+
+    def test_イコール連結のホームディレクトリ参照オプションは拒否される(self):
+        self._assert_denied(["deploy", "push", "--source=~/x"], "ホストのファイルを参照する引数")
+
+    def test_イコール連結で親ディレクトリ参照を含む値は拒否される(self):
+        self._assert_denied(
+            ["s3", "cp", "s3://b/k", "--x=a/../b"],
+            "ホストのファイルを参照する引数",
+        )
+
+    def test_イコール連結でもパスに該当しない値は通る(self):
+        aws_cli_proxy.validate_aws_args(["--query=Contents[]", "s3api", "list-objects"])
 
     def test_argsがlist以外だと拒否される(self):
         self._assert_denied("s3 ls", "args は文字列の配列である必要があります")
@@ -685,6 +724,20 @@ class HandleToolsCallTest(unittest.TestCase):
         text = result["content"][0]["text"]
         self.assertIn("254", text)
         self.assertIn("An error occurred (AccessDenied)", text)
+
+    def test_実行後にnameとprofileとreturncodeとtruncatedをreportに渡す(self):
+        runner = self._runner_returning(
+            aws_cli_proxy.CommandResult(stdout="ok\n", stderr="", returncode=0, truncated=True)
+        )
+        messages: List[str] = []
+        aws_cli_proxy.handle_tools_call(
+            {"name": aws_cli_proxy.TOOL_NAME, "arguments": {"name": "dev", "args": ["s3", "ls"]}},
+            self._entries(), runner, messages.append,
+        )
+        self.assertIn(
+            "aws_run name=dev profile=dev-profile returncode=0 truncated=True",
+            messages,
+        )
 
     def test_runnerがCommandExecutionErrorを投げるとisErrorがTrueになる(self):
         def failing_runner(command: Sequence[str]) -> "aws_cli_proxy.CommandResult":

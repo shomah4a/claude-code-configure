@@ -54,9 +54,12 @@ IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 # 長オプションの省略形 (--prof, --p 等) を受理し、同名オプションは後勝ちになるため、
 # 同じ argparse に拒否対象だけを登録して省略形ごと検出する
 DENIED_VALUE_OPTIONS = ("--profile", "--endpoint-url", "--ca-bundle")
-DENIED_FLAG_OPTIONS = ("--debug", "--no-verify-ssl")
-# ホストの ~/.aws を書き換える・認証情報を出力する・ブラウザや pager を起動するサブコマンド
-DENIED_SUBCOMMANDS = frozenset({"configure", "sso", "help"})
+# --help はサブコマンドのヘルプ (ツール定義と食い違う出力になる) を防ぐため拒否する。
+# 省略形 --h も allow_abbrev により検出される
+DENIED_FLAG_OPTIONS = ("--debug", "--no-verify-ssl", "--help")
+# ホストの ~/.aws を書き換える・認証情報を出力する・ブラウザや pager を起動する・
+# ~/.aws/cli/history から過去の API レスポンスを読み出すサブコマンド
+DENIED_SUBCOMMANDS = frozenset({"configure", "sso", "help", "history"})
 # ホストのファイルを参照する引数
 DENIED_URI_SCHEMES = ("file://", "fileb://")
 DENIED_PATH_PREFIXES = ("/", "~", "./", "../")
@@ -329,8 +332,8 @@ def build_tools(entries: List[ProfileEntry]) -> List[Dict[str, Any]]:
                 "ホスト側で aws コマンドを実行し標準出力を返します。"
                 "args は aws に続く引数の配列です "
                 '(例: ["s3", "ls"], ["sts", "get-caller-identity", "--output", "json"])。'
-                "--profile / --debug / --endpoint-url / --no-verify-ssl / --ca-bundle は指定できません。"
-                "configure / sso / help サブコマンドは使えません。"
+                "--profile / --debug / --endpoint-url / --no-verify-ssl / --ca-bundle / --help は指定できません。"
+                "configure / sso / help / history サブコマンドは使えません。"
                 "file:// や、/ ~ ./ ../ で始まるホストのパスは指定できません。"
                 "出力は既定 1 MiB で切り詰められるため、大きい結果は --query や --max-items で絞ってください"
             ),
@@ -433,12 +436,24 @@ def find_denied_subcommand(args: Sequence[str]) -> Optional[str]:
     return None
 
 
+def extract_connected_value(arg: str) -> Optional[str]:
+    """"-" で始まり "=" を含む要素 (--opt=value 形式) から、最初の "=" 以降の値部分を取り出す
+
+    該当しない場合は None を返す。値そのものに "=" が含まれる場合はそれも値の一部として扱う。
+    """
+    if not arg.startswith("-") or "=" not in arg:
+        return None
+    return arg.split("=", 1)[1]
+
+
 def find_host_path_reference(args: Sequence[str]) -> Optional[str]:
     """args にホストのファイルを参照する引数が含まれていれば、その値を返す
 
     小文字化した値が DENIED_URI_SCHEMES のいずれかを含む (--body=fileb://x のような
     オプション連結形式も対象)、DENIED_PATH_PREFIXES のいずれかで始まる、パス途中に /../ を含む、
     ".." と完全一致する、のいずれかを検出する。
+    --opt=<value> 形式の要素は、extract_connected_value で取り出した値部分に対しても
+    DENIED_PATH_PREFIXES / /../ / ".." の判定を行う (--template-file=/etc/passwd 等を検出するため)。
     """
     for arg in args:
         lowered = arg.lower()
@@ -450,6 +465,15 @@ def find_host_path_reference(args: Sequence[str]) -> Optional[str]:
             return arg
         if arg == "..":
             return arg
+
+        connected_value = extract_connected_value(arg)
+        if connected_value is not None:
+            if connected_value.startswith(DENIED_PATH_PREFIXES):
+                return arg
+            if "/../" in connected_value:
+                return arg
+            if connected_value == "..":
+                return arg
     return None
 
 
@@ -458,6 +482,8 @@ def validate_aws_args(args: Any) -> None:
 
     profile やエンドポイントの上書き、ホストの設定変更・認証情報出力を伴うサブコマンド、
     ホストのファイルを参照する引数を拒否する。
+    "--" は以降の要素を argparse が位置引数として扱う (拒否対象オプションの検出をすり抜けうる)
+    セパレータであるため、単独でも指定自体を拒否する。
     """
     if not isinstance(args, list):
         raise ValidationError("args は文字列の配列である必要があります")
@@ -470,6 +496,9 @@ def validate_aws_args(args: Any) -> None:
             raise ValidationError(f"args の要素は文字列である必要があります (位置 {i})")
         if value == "" or "\n" in value or "\r" in value or "\0" in value:
             raise ValidationError(f"args に空文字列または改行を含む要素があります (位置 {i})")
+
+    if "--" in args:
+        raise ValidationError("-- は指定できません")
 
     denied_option = find_denied_option(args)
     if denied_option is not None:
@@ -528,6 +557,11 @@ def handle_tools_call(
             "content": [{"type": "text", "text": f"エラー: {e}"}],
             "isError": True
         }
+
+    report(
+        f"aws_run name={entry.name} profile={entry.profile} "
+        f"returncode={result.returncode} truncated={result.truncated}"
+    )
 
     if result.returncode == 0:
         return {
