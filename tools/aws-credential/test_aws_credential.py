@@ -5,13 +5,14 @@
 """
 
 import importlib.util
+import io
 import json
 import os
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # 実際の認証情報ではないことが明らかなダミー値 (AWS公式ドキュメントの例示用文字列)
 DUMMY_ACCESS_KEY_ID = "AKIAEXAMPLESECRET"
@@ -454,6 +455,291 @@ class CreateRunCommandTest(unittest.TestCase):
         stdout, _stderr, code = run_command(["sh", "-c", "echo $HOME-$AWS_ACCESS_KEY_ID"])
         self.assertEqual(code, 0)
         self.assertEqual(stdout, "test-home-value-\n")
+
+
+class BuildToolsTest(unittest.TestCase):
+    """build_tools のテスト"""
+
+    def test_enumに記載順でnameが入る(self):
+        entries = [
+            aws_credential.CredentialEntry(name="dev", profile="dev-profile"),
+            aws_credential.CredentialEntry(name="staging", profile="staging-profile"),
+        ]
+        tools = aws_credential.build_tools(entries)
+        self.assertEqual(
+            tools[0]["inputSchema"]["properties"]["name"]["enum"],
+            ["dev", "staging"],
+        )
+
+    def test_requiredにnameが入る(self):
+        tools = aws_credential.build_tools(
+            [aws_credential.CredentialEntry(name="dev", profile="dev-profile")]
+        )
+        self.assertEqual(tools[0]["inputSchema"]["required"], ["name"])
+
+
+class ValidateArgumentsTest(unittest.TestCase):
+    """validate_arguments のテスト"""
+
+    def _entries(self) -> List:
+        return [
+            aws_credential.CredentialEntry(name="dev", profile="dev-profile"),
+            aws_credential.CredentialEntry(name="staging", profile="staging-profile"),
+        ]
+
+    def test_一致するnameのCredentialEntryを返す(self):
+        entry = aws_credential.validate_arguments({"name": "staging"}, self._entries())
+        self.assertEqual(
+            entry,
+            aws_credential.CredentialEntry(name="staging", profile="staging-profile"),
+        )
+
+    def test_nameが欠落しているとValidationErrorになる(self):
+        with self.assertRaises(aws_credential.ValidationError):
+            aws_credential.validate_arguments({}, self._entries())
+
+    def test_未知のフィールドを含むとValidationErrorになる(self):
+        with self.assertRaises(aws_credential.ValidationError):
+            aws_credential.validate_arguments(
+                {"name": "dev", "region": "ap-northeast-1"}, self._entries()
+            )
+
+    def test_未登録のnameを指定するとValidationErrorになる(self):
+        with self.assertRaises(aws_credential.ValidationError):
+            aws_credential.validate_arguments({"name": "unknown"}, self._entries())
+
+    def test_argumentsがdictでないとValidationErrorになる(self):
+        with self.assertRaises(aws_credential.ValidationError):
+            aws_credential.validate_arguments(["dev"], self._entries())
+
+
+class HandleToolsCallTest(unittest.TestCase):
+    """handle_tools_call のテスト"""
+
+    def _entries(self) -> List:
+        return [aws_credential.CredentialEntry(name="dev", profile="dev-profile")]
+
+    def _make_run_command(self, export_stdout: str, export_code: int = 0):
+        """コマンド引数を見て export-credentials と get region の戻り値を切り替える偽の RunCommand"""
+        def run_command(command: List[str]) -> Tuple[str, str, int]:
+            if "export-credentials" in command:
+                return (export_stdout, "", export_code)
+            return ("ap-northeast-1", "", 0)
+        return run_command
+
+    def _valid_export_stdout(self) -> str:
+        return json.dumps({
+            "Version": 1,
+            "AccessKeyId": DUMMY_ACCESS_KEY_ID,
+            "SecretAccessKey": DUMMY_SECRET_ACCESS_KEY,
+        })
+
+    def test_成功時はJSON形式のtextにAWS_ACCESS_KEY_IDを含む(self):
+        run_command = self._make_run_command(self._valid_export_stdout())
+        messages: List[str] = []
+        result = aws_credential.handle_tools_call(
+            {"name": aws_credential.TOOL_NAME, "arguments": {"name": "dev"}},
+            self._entries(), run_command, messages.append,
+        )
+        text = result["content"][0]["text"]
+        self.assertIn("AWS_ACCESS_KEY_ID", text)
+        self.assertEqual(json.loads(text)["AWS_ACCESS_KEY_ID"], DUMMY_ACCESS_KEY_ID)
+
+    def test_認証情報取得に失敗するとisErrorがTrueでダミー秘密を含まない(self):
+        broken_stdout = f"not-json {DUMMY_ACCESS_KEY_ID} {DUMMY_SECRET_ACCESS_KEY}"
+        run_command = self._make_run_command(broken_stdout)
+        messages: List[str] = []
+        result = aws_credential.handle_tools_call(
+            {"name": aws_credential.TOOL_NAME, "arguments": {"name": "dev"}},
+            self._entries(), run_command, messages.append,
+        )
+        self.assertTrue(result["isError"])
+        self.assertNotIn(DUMMY_ACCESS_KEY_ID, result["content"][0]["text"])
+        self.assertNotIn(DUMMY_SECRET_ACCESS_KEY, result["content"][0]["text"])
+
+    def test_未知のツール名を指定するとValidationErrorになる(self):
+        def unused_run_command(command: List[str]) -> Tuple[str, str, int]:
+            raise AssertionError("run_command は呼ばれないはずです")
+
+        messages: List[str] = []
+        with self.assertRaises(aws_credential.ValidationError):
+            aws_credential.handle_tools_call(
+                {"name": "unknown_tool", "arguments": {"name": "dev"}},
+                self._entries(), unused_run_command, messages.append,
+            )
+
+
+class HandleJsonrpcRequestTest(unittest.TestCase):
+    """handle_jsonrpc_request のテスト"""
+
+    def _entries(self) -> List:
+        return [aws_credential.CredentialEntry(name="dev", profile="dev-profile")]
+
+    def _no_op_run_command(self, command: List[str]) -> Tuple[str, str, int]:
+        return ("", "", 0)
+
+    def test_initializeはserverInfoのnameを返す(self):
+        entries = self._entries()
+        messages: List[str] = []
+        response = aws_credential.handle_jsonrpc_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+        )
+        self.assertEqual(response["result"]["serverInfo"]["name"], aws_credential.SERVER_NAME)
+
+    def test_tools_listはツール1件を返す(self):
+        entries = self._entries()
+        messages: List[str] = []
+        response = aws_credential.handle_jsonrpc_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+        )
+        self.assertEqual(len(response["result"]["tools"]), 1)
+
+    def test_未知のメソッドはMETHOD_NOT_FOUNDになる(self):
+        entries = self._entries()
+        messages: List[str] = []
+        response = aws_credential.handle_jsonrpc_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "unknown/method", "params": {}},
+            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+        )
+        self.assertEqual(response["error"]["code"], aws_credential.METHOD_NOT_FOUND)
+
+    def test_jsonrpcが2_0でないとINVALID_REQUESTになる(self):
+        entries = self._entries()
+        messages: List[str] = []
+        response = aws_credential.handle_jsonrpc_request(
+            {"jsonrpc": "1.0", "id": 1, "method": "initialize", "params": {}},
+            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+        )
+        self.assertEqual(response["error"]["code"], aws_credential.INVALID_REQUEST)
+
+    def test_ValidationErrorはINVALID_PARAMSになる(self):
+        entries = self._entries()
+        messages: List[str] = []
+        response = aws_credential.handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": aws_credential.TOOL_NAME, "arguments": {"name": "unknown"}},
+            },
+            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+        )
+        self.assertEqual(response["error"]["code"], aws_credential.INVALID_PARAMS)
+
+    def test_予期しない例外はINTERNAL_ERRORでダミー秘密がmessageに含まれずreportには含まれる(self):
+        entries = self._entries()
+
+        def failing_run_command(command: List[str]) -> Tuple[str, str, int]:
+            raise RuntimeError(f"{DUMMY_ACCESS_KEY_ID} を含む")
+
+        messages: List[str] = []
+        response = aws_credential.handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": aws_credential.TOOL_NAME, "arguments": {"name": "dev"}},
+            },
+            entries, aws_credential.build_tools(entries), failing_run_command, messages.append,
+        )
+        self.assertEqual(response["error"]["code"], aws_credential.INTERNAL_ERROR)
+        self.assertNotIn(DUMMY_ACCESS_KEY_ID, response["error"]["message"])
+        self.assertTrue(any(DUMMY_ACCESS_KEY_ID in message for message in messages))
+
+
+class WsgiApplicationTest(unittest.TestCase):
+    """create_application が返す WSGI アプリケーションのテスト"""
+
+    def _entries(self) -> List:
+        return [aws_credential.CredentialEntry(name="dev", profile="dev-profile")]
+
+    def _run_command(self, command: List[str]) -> Tuple[str, str, int]:
+        if "export-credentials" in command:
+            return (json.dumps({
+                "Version": 1,
+                "AccessKeyId": DUMMY_ACCESS_KEY_ID,
+                "SecretAccessKey": DUMMY_SECRET_ACCESS_KEY,
+            }), "", 0)
+        return ("ap-northeast-1", "", 0)
+
+    def _call_app(
+        self, app, body: Optional[bytes], method: str = "POST",
+        content_type: str = "application/json",
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """WSGI アプリを直接呼び出し、(status, レスポンスJSON) を返すテスト用ヘルパー"""
+        captured_status: List[str] = []
+
+        def start_response(status: str, headers: List[Tuple[str, str]]) -> None:
+            captured_status.append(status)
+
+        body_bytes = body if body is not None else b""
+        environ = {
+            "REQUEST_METHOD": method,
+            "CONTENT_TYPE": content_type,
+            "CONTENT_LENGTH": str(len(body_bytes)),
+            "wsgi.input": io.BytesIO(body_bytes),
+        }
+        result = app(environ, start_response)
+        response_body = b"".join(result)
+        try:
+            parsed = json.loads(response_body) if response_body else None
+        except json.JSONDecodeError:
+            parsed = None
+        return captured_status[0], parsed
+
+    def test_GETは405になる(self):
+        messages: List[str] = []
+        app = aws_credential.create_application(self._entries(), self._run_command, messages.append)
+        status, _parsed = self._call_app(app, None, method="GET")
+        self.assertTrue(status.startswith("405"))
+
+    def test_Content_Typeがtext_plainだと415になる(self):
+        messages: List[str] = []
+        app = aws_credential.create_application(self._entries(), self._run_command, messages.append)
+        status, _parsed = self._call_app(app, b"{}", content_type="text/plain")
+        self.assertTrue(status.startswith("415"))
+
+    def test_不正なJSON本文は200でPARSE_ERRORのJSON_RPCエラーになる(self):
+        messages: List[str] = []
+        app = aws_credential.create_application(self._entries(), self._run_command, messages.append)
+        status, parsed = self._call_app(app, b"not-json")
+        self.assertTrue(status.startswith("200"))
+        self.assertEqual(parsed["error"]["code"], aws_credential.PARSE_ERROR)
+        self.assertIsNone(parsed["id"])
+
+    def test_正常なtools_callは200でcontentを返す(self):
+        messages: List[str] = []
+        app = aws_credential.create_application(self._entries(), self._run_command, messages.append)
+        body = json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": aws_credential.TOOL_NAME, "arguments": {"name": "dev"}},
+        }).encode("utf-8")
+        status, parsed = self._call_app(app, body)
+        self.assertTrue(status.startswith("200"))
+        self.assertIn("content", parsed["result"])
+
+
+class ResolveBindTest(unittest.TestCase):
+    """resolve_bind のテスト"""
+
+    def test_環境変数が無ければ既定値を使う(self):
+        self.assertEqual(aws_credential.resolve_bind({}), aws_credential.DEFAULT_BIND)
+
+    def test_環境変数が設定されていればその値を使う(self):
+        bind = aws_credential.resolve_bind({aws_credential.BIND_ENV: "0.0.0.0"})
+        self.assertEqual(bind, "0.0.0.0")
+
+
+class ResolvePortTest(unittest.TestCase):
+    """resolve_port のテスト"""
+
+    def test_環境変数が無ければ既定値を使う(self):
+        self.assertEqual(aws_credential.resolve_port({}), aws_credential.DEFAULT_PORT)
+
+    def test_環境変数が数値文字列であればその値を使う(self):
+        self.assertEqual(aws_credential.resolve_port({aws_credential.PORT_ENV: "12345"}), 12345)
+
+    def test_環境変数が数値でなければConfigErrorになる(self):
+        with self.assertRaises(aws_credential.ConfigError):
+            aws_credential.resolve_port({aws_credential.PORT_ENV: "not-a-number"})
 
 
 if __name__ == "__main__":
