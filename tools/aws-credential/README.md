@@ -4,7 +4,7 @@ Model Context Protocol (MCP) サーバーとして動作し、ホスト側の AW
 
 ## 概要
 
-このサーバーは、Docker コンテナで動作する Claude Code に対して、ホスト側の `~/.aws/config` に定義されたプロファイルの認証情報を返します。
+このサーバーは、Docker コンテナで動作する Claude Code に対して、ホスト側の `~/.aws/config` または `~/.aws/credentials` に定義されたプロファイルの認証情報を返します。
 ホスト側でサーバーを起動し、コンテナ内の Claude Code から HTTP 経由でアクセスします。
 認証情報の解決は `aws configure export-credentials` に委譲するため、SSO、assume-role、credential_process、MFA を含むプロファイルに対応します。
 
@@ -16,7 +16,7 @@ Model Context Protocol (MCP) サーバーとして動作し、ホスト側の AW
 - AWS CLI v2 (2.9 以降)
   - `aws configure export-credentials` は AWS CLI v2 の 2.9 系で追加されました。v1 にはありません
   - 出典: https://github.com/aws/aws-cli/issues/7388
-- 取得対象のプロファイルが `~/.aws/config` に定義されていること
+- 取得対象のプロファイルが `~/.aws/config` または `~/.aws/credentials` に定義されていること
   - SSO プロファイルは事前に `aws sso login --profile <profile>` でログインしておく必要があります
   - MFA 等で対話入力を要求するプロファイルは、標準入力を閉じて実行するため取得に失敗します
 
@@ -60,6 +60,7 @@ AWS_CREDENTIAL_PROXY_PORT=30800 make -C tools/aws-credential serve
 | `AWS_CREDENTIAL_PROXY_PORT` | `30722` | 待ち受けポート |
 | `AWS_CREDENTIAL_PROXY_TIMEOUT` | `30` | `aws` コマンドのタイムアウト (秒) |
 | `AWS_CREDENTIAL_PROXY_CONFIG` | スクリプトと同じディレクトリの `aws-credential.yml` | 設定ファイルのパス |
+| `AWS_CREDENTIAL_PROXY_ALLOWED_HOSTS` | (なし) | `Host` / `Origin` ヘッダで許可するホスト名の追加分 (カンマ区切り)。`localhost`, `127.0.0.1`, `::1` は常に許可 |
 
 `tools/tool-launcher/launcher.py` (`make launch-servers`) にも登録されているため、他のツールと一括起動できます。
 
@@ -70,7 +71,7 @@ AWS_CREDENTIAL_PROXY_PORT=30800 make -C tools/aws-credential serve
 `mcp-servers.template.json` に登録済みです。`make update` で `mcp-servers.json` に反映され、コンテナ内の Claude Code から `aws-credential` サーバーとして利用できます。
 
 `docker/docker-compose.yml` は `network_mode: host` のため、コンテナ内の `localhost:30722` はホストの loopback と同一です。
-bridge network 構成に変更する場合は `AWS_CREDENTIAL_PROXY_BIND` で待ち受けアドレスを明示し、`mcp-servers.template.json` の URL も合わせて変更してください。
+bridge network 構成に変更する場合は `AWS_CREDENTIAL_PROXY_BIND` で待ち受けアドレスを明示し、`AWS_CREDENTIAL_PROXY_ALLOWED_HOSTS` に接続時のホスト名 (例: `host.docker.internal`) を追加し、`mcp-servers.template.json` の URL も合わせて変更してください。
 
 ## 提供するツール
 
@@ -96,7 +97,7 @@ bridge network 構成に変更する場合は `AWS_CREDENTIAL_PROXY_BIND` で待
 ```
 
 - `AWS_SESSION_TOKEN`、`AWS_CREDENTIAL_EXPIRATION` は一時認証情報の場合のみ含まれます。静的なアクセスキーのプロファイルでは含まれません
-- `AWS_REGION`、`AWS_DEFAULT_REGION` は `aws configure get region --profile <profile>` で region を取得できた場合のみ含まれます。両方に同じ値が入ります
+- `AWS_REGION`、`AWS_DEFAULT_REGION` は `aws configure get region --profile <profile>` で region を取得できた場合のみ含まれます。両方に同じ値が入ります。コンテナには `~/.aws/config` が無いため、含まれない場合はコンテナ内の `aws` に `--region` を付けるか `AWS_REGION` を手動で設定してください
 - 一時認証情報は `AWS_CREDENTIAL_EXPIRATION` の時刻で失効します。失効後は再取得してください
 
 取得に失敗した場合は `isError: true` で、終了コードを含む固定の文言を返します。`aws` コマンドの標準エラー出力はクライアントには返さず、サーバーの標準エラー出力にのみ記録します。
@@ -112,7 +113,7 @@ bridge network 構成に変更する場合は `AWS_CREDENTIAL_PROXY_BIND` で待
 `aws` コマンドは以下の条件で実行します。
 
 - 標準入力は閉じて実行します (対話入力でハングしないようにするため)
-- 環境変数は `HOME`, `PATH`, `LANG`, `LC_ALL` のみを引き継ぎます。サーバーを起動したシェルの `AWS_*` 環境変数は渡しません
+- 環境変数は `HOME`, `PATH`, `LANG`, `LC_ALL` のみを引き継ぎます。サーバーを起動したシェルの `AWS_*` 環境変数は渡しません。`HTTPS_PROXY` や `AWS_CA_BUNDLE` も渡さないため、プロキシや社内 CA を必要とする環境では SSO / assume-role の解決に失敗します
 - サーバーは単一スレッドで動作します。`aws` コマンドの実行中は他のリクエストを処理しません
 
 ## セキュリティ考慮事項
@@ -121,7 +122,8 @@ bridge network 構成に変更する場合は `AWS_CREDENTIAL_PROXY_BIND` で待
 - **全プロジェクト・全セッションで有効になります。** `mcp-servers.json` は managed MCP 設定 (`/etc/claude-code/managed-mcp.json`) としてコンテナにマウントされるため、AWS を使わないプロジェクトのセッションからも呼び出せます。`--permission-mode auto` と組み合わせた場合、外部コンテンツ (Web ページ、Issue 本文、PR コメント等) に埋め込まれた指示によって呼び出され、認証情報が外部へ送信されるリスクがあります。コンテナに AWS CLI が入っている構成では、取得した認証情報でコンテナ内から AWS API (読み出し・破壊的操作の双方) を実行できます
 - **認証は行いません。** 既定で loopback (`127.0.0.1`) にのみ bind するため、同一ホスト上のプロセスからのみ到達できます。`AWS_CREDENTIAL_PROXY_BIND` を `0.0.0.0` 等に変更すると、ネットワーク上の任意のホストから無認証で認証情報を取得できる状態になります
 - `name` と `profile` は先頭にハイフンを許可しないため、`aws` コマンドへのオプション注入はできません
-- `aws` の標準出力・標準エラー出力の内容はクライアントへのエラー応答に含めません
+- `aws` の標準出力・標準エラー出力の内容はクライアントへのエラー応答に含めません。`aws` の標準エラー出力はサーバーの標準エラー出力 (`make launch-servers` 経由ではその端末) に記録されます。`credential_process` を使うプロファイルでは、そのスクリプトが標準エラー出力に書いた内容がここに含まれます
+- `Host` ヘッダと (存在する場合) `Origin` ヘッダのホスト名が loopback (`localhost`, `127.0.0.1`, `::1`) または `AWS_CREDENTIAL_PROXY_ALLOWED_HOSTS` に無いリクエストは 403 で拒否します。ホスト上のブラウザで開いたページから DNS リバインディングで `127.0.0.1:30722` に到達する経路への対策です。同一ホスト上の非ブラウザプロセスからの直接アクセスは防ぎません
 
 ## テスト
 
