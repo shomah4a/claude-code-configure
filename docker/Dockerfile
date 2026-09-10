@@ -47,14 +47,13 @@ RUN npm install -g @openai/codex@0.144.1
 
 # AWS CLI v2 のインストール
 # 公式配布の zip をバージョン固定で取得し、同梱の install スクリプトで /usr/local/aws-cli に展開する
-# (/usr/local/bin/aws に symlink が作られる)。
-# apt の awscli は Ubuntu 26.04 では 2.31.35 (universe) だが、バージョンを固定できずディストリ版に追随するため使わない。
-# unzip は展開に、less は AWS CLI v2 の既定 pager として必要 (上の apt で導入)。groff は入れていないため aws help は利用不可。
+# (/usr/local/bin/aws に symlink が作られる)。apt の awscli は v1 系のため使わない。
+# unzip は展開に、less は AWS CLI v2 の既定 pager として必要 (上の apt で導入)。
 # バージョン付き URL の形式: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-version.html
 # amd64 固定 (aarch64 は awscli-exe-linux-aarch64-<version>.zip)。root で実行するため USER ubuntu より前に置く。
 ENV AWS_CLI_VERSION=2.36.42
 RUN curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip -o /tmp/awscliv2.zip \
-    && unzip -oq /tmp/awscliv2.zip -d /tmp \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
     && /tmp/aws/install \
     && rm -rf /tmp/aws /tmp/awscliv2.zip
 
