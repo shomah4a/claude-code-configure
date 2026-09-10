@@ -600,7 +600,7 @@ def main() -> int:
     print(f"設定ファイル: {config_path}", flush=True)
     print(f"登録された name: {', '.join(entry.name for entry in entries)}", flush=True)
     print(f"Bind: {bind}:{port}", flush=True)
-    print(, flush=True)
+    print(flush=True)
     print("サーバーを起動しています...", flush=True)
 
     with make_server(bind, port, create_application(entries, run_command, report_to_stderr)) as httpd:
