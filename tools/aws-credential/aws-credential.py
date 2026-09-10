@@ -593,22 +593,23 @@ def main() -> int:
     run_command = create_run_command(timeout_sec, build_subprocess_env(environ))
     bind = resolve_bind(environ)
 
-    print("AWS Credential MCP Proxy Server")
-    print(f"Protocol Version: {PROTOCOL_VERSION}")
-    print(f"Server: {SERVER_NAME} v{SERVER_VERSION}")
-    print(f"設定ファイル: {config_path}")
-    print(f"登録された name: {', '.join(entry.name for entry in entries)}")
-    print(f"Bind: {bind}:{port}")
-    print()
-    print("サーバーを起動しています...")
+    # tool-launcher が stdout を pipe で受けるため、ブロックバッファリングで起動メッセージが滞留しないよう flush する
+    print("AWS Credential MCP Proxy Server", flush=True)
+    print(f"Protocol Version: {PROTOCOL_VERSION}", flush=True)
+    print(f"Server: {SERVER_NAME} v{SERVER_VERSION}", flush=True)
+    print(f"設定ファイル: {config_path}", flush=True)
+    print(f"登録された name: {', '.join(entry.name for entry in entries)}", flush=True)
+    print(f"Bind: {bind}:{port}", flush=True)
+    print(, flush=True)
+    print("サーバーを起動しています...", flush=True)
 
     with make_server(bind, port, create_application(entries, run_command, report_to_stderr)) as httpd:
-        print(f"サーバーが起動しました: http://{bind}:{port}")
-        print("Ctrl+C で停止します")
+        print(f"サーバーが起動しました: http://{bind}:{port}", flush=True)
+        print("Ctrl+C で停止します", flush=True)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            print("\nサーバーを停止しています...")
+            print("\nサーバーを停止しています...", flush=True)
 
     return 0
 
