@@ -24,6 +24,19 @@ aws_cli_proxy = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(aws_cli_proxy)
 
 
+class ParseProfileEntryTest(unittest.TestCase):
+    """parse_profile_entry のテスト"""
+
+    def test_confがdictでないとValueErrorになる(self):
+        with self.assertRaises(ValueError):
+            aws_cli_proxy.parse_profile_entry("dev", "not-a-dict")
+
+    def test_profileの末尾に改行を含むとValueErrorになる(self):
+        # IDENTIFIER_PATTERN は \Z を使っており、$ と違って末尾改行の直前にはマッチしないため拒否される
+        with self.assertRaises(ValueError):
+            aws_cli_proxy.parse_profile_entry("dev", {"profile": "dev\n"})
+
+
 class ParseEntriesTest(unittest.TestCase):
     """parse_entries のテスト"""
 
@@ -206,6 +219,10 @@ class ResolveTimeoutSecTest(unittest.TestCase):
     def test_環境変数が数値でなければConfigErrorになる(self):
         with self.assertRaises(aws_cli_proxy.ConfigError):
             aws_cli_proxy.resolve_timeout_sec({aws_cli_proxy.TIMEOUT_ENV: "not-a-number"})
+
+    def test_タイムアウトが0以下だとConfigErrorになる(self):
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.resolve_timeout_sec({aws_cli_proxy.TIMEOUT_ENV: "0"})
 
 
 class BuildAwsCommandTest(unittest.TestCase):
@@ -705,6 +722,17 @@ class HandleToolsCallTest(unittest.TestCase):
                 self._entries(), unused_runner, messages.append,
             )
 
+    def test_paramsにnameが無いとValidationErrorになる(self):
+        def unused_runner(command: Sequence[str]) -> "aws_cli_proxy.CommandResult":
+            raise AssertionError("runner は呼ばれないはずです")
+
+        messages: List[str] = []
+        with self.assertRaises(aws_cli_proxy.ValidationError):
+            aws_cli_proxy.handle_tools_call(
+                {"arguments": {"name": "dev", "args": ["s3", "ls"]}},
+                self._entries(), unused_runner, messages.append,
+            )
+
 
 class HandleJsonrpcRequestTest(unittest.TestCase):
     """handle_jsonrpc_request のテスト"""
@@ -747,6 +775,15 @@ class HandleJsonrpcRequestTest(unittest.TestCase):
         messages: List[str] = []
         response = aws_cli_proxy.handle_jsonrpc_request(
             {"jsonrpc": "1.0", "id": 1, "method": "initialize", "params": {}},
+            entries, aws_cli_proxy.build_tools(entries), self._no_op_runner, messages.append,
+        )
+        self.assertEqual(response["error"]["code"], aws_cli_proxy.INVALID_REQUEST)
+
+    def test_methodが欠落しているとINVALID_REQUESTになる(self):
+        entries = self._entries()
+        messages: List[str] = []
+        response = aws_cli_proxy.handle_jsonrpc_request(
+            {"jsonrpc": "2.0", "id": 1, "params": {}},
             entries, aws_cli_proxy.build_tools(entries), self._no_op_runner, messages.append,
         )
         self.assertEqual(response["error"]["code"], aws_cli_proxy.INVALID_REQUEST)
@@ -820,6 +857,12 @@ class ExtractHostNameTest(unittest.TestCase):
 
     def test_前後の空白を除去する(self):
         self.assertEqual(aws_cli_proxy.extract_host_name("  localhost:30722  "), "localhost")
+
+    def test_大文字のホスト名は小文字化される(self):
+        self.assertEqual(aws_cli_proxy.extract_host_name("LOCALHOST:30722"), "localhost")
+
+    def test_大文字を含むIPv6アドレスは小文字化される(self):
+        self.assertEqual(aws_cli_proxy.extract_host_name("[::FF]:30722"), "[::ff]")
 
 
 class ExtractOriginHostTest(unittest.TestCase):
@@ -895,6 +938,25 @@ class WsgiApplicationTest(unittest.TestCase):
         app = self._create_app(messages)
         status, _parsed = self._call_app(app, None, method="GET")
         self.assertTrue(status.startswith("405"))
+
+    def test_CONTENT_LENGTHが無くても例外にならず本文なしとして処理される(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+
+        captured_status: List[str] = []
+
+        def start_response(status: str, headers: List[Tuple[str, str]]) -> None:
+            captured_status.append(status)
+
+        environ: Dict[str, Any] = {
+            "REQUEST_METHOD": "POST",
+            "CONTENT_TYPE": "application/json",
+            "HTTP_HOST": "localhost:30722",
+            "wsgi.input": io.BytesIO(b""),
+        }
+        result = app(environ, start_response)
+        b"".join(result)
+        self.assertTrue(captured_status[0].startswith("200"))
 
     def test_Content_Typeがtext_plainだと415になる(self):
         messages: List[str] = []
@@ -972,6 +1034,27 @@ class WsgiApplicationTest(unittest.TestCase):
         status, _parsed = self._call_app(app, b"{}", host=None)
         self.assertTrue(status.startswith("403"))
 
+    def test_Hostヘッダが重複してカンマ結合されていると403になる(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(app, b"{}", host="localhost:30722, attacker.example:30722")
+        self.assertTrue(status.startswith("403"))
+
+    def test_大文字のHostヘッダでも通る(self):
+        messages: List[str] = []
+        app = self._create_app(messages)
+        status, _parsed = self._call_app(app, b"{}", host="LOCALHOST:30722")
+        self.assertTrue(status.startswith("200"))
+
+    def test_環境変数に大文字を含むホストを追加しても小文字化されたリクエストが通る(self):
+        messages: List[str] = []
+        allowed_hosts = aws_cli_proxy.resolve_allowed_hosts(
+            {aws_cli_proxy.ALLOWED_HOSTS_ENV: "Host.Docker.Internal"}
+        )
+        app = self._create_app(messages, allowed_hosts=allowed_hosts)
+        status, _parsed = self._call_app(app, b"{}", host="host.docker.internal:30722")
+        self.assertTrue(status.startswith("200"))
+
     def test_Originが許可されていないホストだとHostがlocalhostでも403になる(self):
         messages: List[str] = []
         app = self._create_app(messages)
@@ -1035,6 +1118,12 @@ class ResolvePortTest(unittest.TestCase):
         with self.assertRaises(aws_cli_proxy.ConfigError):
             aws_cli_proxy.resolve_port({aws_cli_proxy.PORT_ENV: "not-a-number"})
 
+    def test_ポートが範囲外だとConfigErrorになる(self):
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.resolve_port({aws_cli_proxy.PORT_ENV: "0"})
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.resolve_port({aws_cli_proxy.PORT_ENV: "65536"})
+
 
 class ResolveAllowedHostsTest(unittest.TestCase):
     """resolve_allowed_hosts のテスト"""
@@ -1052,6 +1141,13 @@ class ResolveAllowedHostsTest(unittest.TestCase):
         self.assertIn("host.docker.internal", allowed_hosts)
         self.assertIn("example.internal", allowed_hosts)
         self.assertIn("localhost", allowed_hosts)
+
+    def test_環境変数のホストは小文字化して追加される(self):
+        allowed_hosts = aws_cli_proxy.resolve_allowed_hosts(
+            {aws_cli_proxy.ALLOWED_HOSTS_ENV: "Host.Docker.Internal"}
+        )
+        self.assertIn("host.docker.internal", allowed_hosts)
+        self.assertNotIn("Host.Docker.Internal", allowed_hosts)
 
 
 if __name__ == "__main__":

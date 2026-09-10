@@ -43,10 +43,12 @@ DEFAULT_PORT = 30722
 TOOL_NAME = "aws_run"
 ALLOWED_HOSTS_ENV = "AWS_CLI_PROXY_ALLOWED_HOSTS"
 # loopback を指すホスト名。Host / Origin ヘッダのホスト部がこれ以外なら 403 (DNS リバインディング対策)
-DEFAULT_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+# extract_host_name は角括弧を外さないため "::1" (角括弧なし) は照合に到達しない死んだ要素であり含めない
+DEFAULT_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
 
-# name と profile に共通。先頭の - を拒否して subprocess へのオプション注入を防ぐ
-IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# name と profile に共通。先頭の - を拒否して subprocess へのオプション注入を防ぐ。
+# $ は末尾の改行の直前にもマッチするため、末尾改行を確実に拒否できる \Z を使う
+IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 # aws_run ツールの args に指定させないグローバルオプション。AWS CLI は argparse の allow_abbrev により
 # 長オプションの省略形 (--prof, --p 等) を受理し、同名オプションは後勝ちになるため、
@@ -101,7 +103,7 @@ class CommandExecutionError(Exception):
     """aws コマンド実行そのものの失敗 (タイムアウト、コマンド不在)。メッセージはクライアントに返す"""
 
 
-def parse_credential_entry(name: Any, conf: Any) -> ProfileEntry:
+def parse_profile_entry(name: Any, conf: Any) -> ProfileEntry:
     """1 エントリ分の name / conf を検証し ProfileEntry に変換する
 
     不正な場合は理由を含む ValueError を送出する。
@@ -139,7 +141,7 @@ def parse_entries(raw: Any, report: Callable[[str], None]) -> List[ProfileEntry]
     entries: List[ProfileEntry] = []
     for name, conf in profiles.items():
         try:
-            entries.append(parse_credential_entry(name, conf))
+            entries.append(parse_profile_entry(name, conf))
         except ValueError as e:
             report(f"エントリ '{name}' をスキップします: {e}")
 
@@ -178,15 +180,23 @@ def resolve_config_path(environ: Mapping[str, str]) -> Path:
 
 
 def resolve_timeout_sec(environ: Mapping[str, str]) -> int:
-    """環境変数からサブプロセスのタイムアウト秒数を決定する"""
+    """環境変数からサブプロセスのタイムアウト秒数を決定する
+
+    整数に変換できない、または 0 以下の場合は ConfigError を送出する。
+    """
     configured = environ.get(TIMEOUT_ENV)
     if configured is None:
         return DEFAULT_TIMEOUT_SEC
 
     try:
-        return int(configured)
+        timeout_sec = int(configured)
     except ValueError:
         raise ConfigError(f"{TIMEOUT_ENV} は整数である必要があります: {configured}")
+
+    if timeout_sec <= 0:
+        raise ConfigError(f"{TIMEOUT_ENV} は正の整数である必要があります: {configured}")
+
+    return timeout_sec
 
 
 def build_aws_command(profile: str, args: Sequence[str]) -> List[str]:
@@ -626,18 +636,19 @@ def extract_host_name(host_header: str) -> str:
     """Host ヘッダ値、または Origin の host[:port] 部分からポートを除いたホスト名を返す
 
     IPv6 表記 ([::1]:30722) は ] の後ろのポートだけを除き [::1] を返す。
+    ホスト名の大文字小文字は区別されないため、常に小文字化して返す。
     """
     value = host_header.strip()
 
     if value.startswith("["):
         closing = value.find("]")
         if closing == -1:
-            return value
-        return value[:closing + 1]
+            return value.lower()
+        return value[:closing + 1].lower()
 
     if ":" in value:
-        return value.rsplit(":", 1)[0]
-    return value
+        return value.rsplit(":", 1)[0].lower()
+    return value.lower()
 
 
 def extract_origin_host(origin_header: str) -> str:
@@ -659,9 +670,14 @@ def is_request_from_allowed_host(environ: Dict[str, Any], allowed_hosts: FrozenS
     """DNS リバインディング対策として Host / Origin ヘッダを検証する
 
     Origin ヘッダが無い場合は Host のみで判定する (Claude Code の MCP クライアントは Origin を送らないと想定)。
+    複数の Host ヘッダが送られると wsgiref はカンマ区切りで連結するため、
+    カンマを含む場合はどの値で判定すべきか一意に決まらず 403 とする。
     """
     host_header = environ.get("HTTP_HOST")
-    if not host_header or extract_host_name(host_header) not in allowed_hosts:
+    if not host_header or "," in host_header:
+        return False
+
+    if extract_host_name(host_header) not in allowed_hosts:
         return False
 
     origin_header = environ.get("HTTP_ORIGIN")
@@ -753,27 +769,34 @@ def resolve_port(environ: Mapping[str, str]) -> int:
     """環境変数から listen ポート番号を決定する
 
     環境変数が設定されていればその値を整数に変換して返し、無ければ既定値を返す。
+    整数に変換できない、または 1〜65535 の範囲外の場合は ConfigError を送出する。
     """
     configured = environ.get(PORT_ENV)
     if configured is None:
         return DEFAULT_PORT
 
     try:
-        return int(configured)
+        port = int(configured)
     except ValueError:
         raise ConfigError(f"{PORT_ENV} は整数である必要があります: {configured}")
+
+    if not 1 <= port <= 65535:
+        raise ConfigError(f"{PORT_ENV} は 1〜65535 の範囲である必要があります: {configured}")
+
+    return port
 
 
 def resolve_allowed_hosts(environ: Mapping[str, str]) -> FrozenSet[str]:
     """環境変数から許可する Host/Origin のホスト名集合を決定する
 
     環境変数が設定されていれば DEFAULT_ALLOWED_HOSTS に追加する。設定されていなければ DEFAULT_ALLOWED_HOSTS のみ。
+    ホスト名の大文字小文字は区別されないため、追加分は小文字化して格納する。
     """
     configured = environ.get(ALLOWED_HOSTS_ENV)
     if configured is None:
         return DEFAULT_ALLOWED_HOSTS
 
-    additional = {host.strip() for host in configured.split(",") if host.strip()}
+    additional = {host.strip().lower() for host in configured.split(",") if host.strip()}
     return frozenset(DEFAULT_ALLOWED_HOSTS | additional)
 
 
