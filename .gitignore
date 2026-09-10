@@ -15,3 +15,5 @@ __pycache__/
 
 # venv
 tools/mcp-proxy/venv/
+tools/aws-credential/venv/
+tools/aws-credential/aws-credential.yml
