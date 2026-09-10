@@ -515,6 +515,151 @@ class ValidateArgumentsTest(unittest.TestCase):
             aws_cli_proxy.validate_arguments(["dev"], self._entries())
 
 
+class FindDeniedOptionTest(unittest.TestCase):
+    """find_denied_option のテスト"""
+
+    def test_拒否対象オプションが無ければNoneを返す(self):
+        self.assertIsNone(aws_cli_proxy.find_denied_option(["s3", "ls"]))
+
+    def test_profileオプションを検出するとprofileを返す(self):
+        self.assertEqual(
+            aws_cli_proxy.find_denied_option(["s3", "ls", "--profile", "other"]),
+            "--profile",
+        )
+
+    def test_イコール形式のendpoint_urlオプションを検出するとendpoint_urlを返す(self):
+        self.assertEqual(
+            aws_cli_proxy.find_denied_option(["--endpoint-url=http://evil.example", "s3", "ls"]),
+            "--endpoint-url",
+        )
+
+
+class ValidateAwsArgsTest(unittest.TestCase):
+    """validate_aws_args のテスト"""
+
+    def test_オプション連結形式のfileb参照も拒否される(self):
+        with self.assertRaises(aws_cli_proxy.ValidationError) as ctx:
+            aws_cli_proxy.validate_aws_args(["s3api", "put-object", "--body=fileb://x"])
+        self.assertIn("ホストのファイルを参照する引数", str(ctx.exception))
+
+    def _assert_denied(self, args: Any, expected_message_part: str) -> None:
+        with self.assertRaises(aws_cli_proxy.ValidationError) as ctx:
+            aws_cli_proxy.validate_aws_args(args)
+        self.assertIn(expected_message_part, str(ctx.exception))
+
+    def test_s3のlsは通る(self):
+        aws_cli_proxy.validate_aws_args(["s3", "ls"])
+
+    def test_stsのget_caller_identityにoutputオプションを付けても通る(self):
+        aws_cli_proxy.validate_aws_args(["sts", "get-caller-identity", "--output", "json"])
+
+    def test_末尾のprofileオプション指定は拒否される(self):
+        self._assert_denied(["s3", "ls", "--profile", "other"], "指定できないオプション")
+
+    def test_イコール形式のprofileオプション指定は拒否される(self):
+        self._assert_denied(["--profile=other", "s3", "ls"], "指定できないオプション")
+
+    def test_profileの省略形profでの指定は拒否される(self):
+        self._assert_denied(["s3", "ls", "--prof", "other"], "指定できないオプション")
+
+    def test_profileの省略形pでの指定は拒否される(self):
+        self._assert_denied(["--p", "other", "s3", "ls"], "指定できないオプション")
+
+    def test_値の無いprofileオプション単独指定は拒否される(self):
+        self._assert_denied(["s3", "ls", "--profile"], "指定できないオプション")
+
+    def test_debugフラグ指定は拒否される(self):
+        self._assert_denied(["s3", "ls", "--debug"], "指定できないオプション")
+
+    def test_debugの省略形での指定は拒否される(self):
+        self._assert_denied(["--deb", "s3", "ls"], "指定できないオプション")
+
+    def test_no_verify_sslフラグ指定は拒否される(self):
+        self._assert_denied(["--no-verify-ssl", "s3", "ls"], "指定できないオプション")
+
+    def test_endpoint_urlオプション指定は拒否される(self):
+        self._assert_denied(["s3", "ls", "--endpoint-url", "http://evil.example"], "指定できないオプション")
+
+    def test_イコール形式のendpoint_urlオプション指定は拒否される(self):
+        self._assert_denied(["--endpoint-url=http://evil.example", "s3", "ls"], "指定できないオプション")
+
+    def test_ca_bundleオプション指定は拒否される(self):
+        self._assert_denied(["--ca-bundle", "x.pem", "s3", "ls"], "指定できないオプション")
+
+    def test_セパレータ以降のprofileはargparseの実挙動により位置引数として通る(self):
+        # parse_known_args は "--" 以降の要素をオプションではなく位置引数として扱うため検出対象にならない。
+        # AWS CLI 側も同じ argparse の規則で "--" 以降を位置引数として扱うため、profile の上書きにはならない
+        aws_cli_proxy.validate_aws_args(["s3", "ls", "--", "--profile"])
+
+    def test_configureサブコマンド単独指定は拒否される(self):
+        self._assert_denied(["configure", "list-profiles"], "指定できないサブコマンド")
+
+    def test_configureが末尾にあっても拒否される(self):
+        self._assert_denied(["s3", "ls", "configure"], "指定できないサブコマンド")
+
+    def test_ssoサブコマンド指定は拒否される(self):
+        self._assert_denied(["sso", "login"], "指定できないサブコマンド")
+
+    def test_helpサブコマンド単独指定は拒否される(self):
+        self._assert_denied(["help"], "指定できないサブコマンド")
+
+    def test_helpが末尾にあっても拒否される(self):
+        self._assert_denied(["s3", "help"], "指定できないサブコマンド")
+
+    def test_s3cpのコピー先が絶対パスだと拒否される(self):
+        self._assert_denied(["s3", "cp", "s3://b/k", "/tmp/x"], "ホストのファイルを参照する引数")
+
+    def test_s3cpのコピー元がホームディレクトリ参照だと拒否される(self):
+        self._assert_denied(["s3", "cp", "~/x", "s3://b/k"], "ホストのファイルを参照する引数")
+
+    def test_s3cpのコピー元がカレントディレクトリ相対パスだと拒否される(self):
+        self._assert_denied(["s3", "cp", "./x", "s3://b/k"], "ホストのファイルを参照する引数")
+
+    def test_s3syncの同期先が親ディレクトリだと拒否される(self):
+        self._assert_denied(["s3", "sync", "s3://b", ".."], "ホストのファイルを参照する引数")
+
+    def test_パス途中に親ディレクトリ参照を含むと拒否される(self):
+        self._assert_denied(["s3", "cp", "a/../b", "s3://b/k"], "ホストのファイルを参照する引数")
+
+    def test_fileスキームのcli_input_json指定は拒否される(self):
+        self._assert_denied(
+            ["--cli-input-json", "file://x.json", "s3api", "list-buckets"],
+            "ホストのファイルを参照する引数",
+        )
+
+    def test_大文字のFILEBスキーム指定は拒否される(self):
+        self._assert_denied(
+            ["s3api", "put-object", "--body", "FILEB://x"],
+            "ホストのファイルを参照する引数",
+        )
+
+    def test_先頭スラッシュのロググループ名はホストパスと誤検知され拒否される(self):
+        # 仕様として受容する誤検知: /aws/lambda/f はホストのパスではなく CloudWatch Logs の
+        # ロググループ名だが、先頭が "/" であるため find_host_path_reference が検出してしまう
+        self._assert_denied(
+            ["logs", "describe-log-streams", "--log-group-name", "/aws/lambda/f"],
+            "ホストのファイルを参照する引数",
+        )
+
+    def test_相対パスの出力ファイル名は通る(self):
+        aws_cli_proxy.validate_aws_args(["s3", "cp", "s3://b/k", "out.json"])
+
+    def test_argsがlist以外だと拒否される(self):
+        self._assert_denied("s3 ls", "args は文字列の配列である必要があります")
+
+    def test_空リストは拒否される(self):
+        self._assert_denied([], "args には 1 つ以上の引数が必要です")
+
+    def test_文字列でない要素を含むと拒否される(self):
+        self._assert_denied(["s3", 1], "args の要素は文字列である必要があります (位置 1)")
+
+    def test_空文字列の要素を含むと拒否される(self):
+        self._assert_denied(["s3", ""], "args に空文字列または改行を含む要素があります (位置 1)")
+
+    def test_改行を含む要素を含むと拒否される(self):
+        self._assert_denied(["s3", "ls\n"], "args に空文字列または改行を含む要素があります (位置 1)")
+
+
 class HandleToolsCallTest(unittest.TestCase):
     """handle_tools_call のテスト"""
 

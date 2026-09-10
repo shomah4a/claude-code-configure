@@ -7,6 +7,7 @@ AWS CLI MCP Proxy Server
 認証情報はホストの aws プロセス内で解決され、クライアントには渡しません。
 """
 
+import argparse
 import dataclasses
 import json
 import os
@@ -14,7 +15,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 from wsgiref.simple_server import make_server
 
@@ -42,6 +43,17 @@ EXPECTED_PROCESS_FORMAT_VERSION = 1
 
 # name と profile に共通。先頭の - を拒否して subprocess へのオプション注入を防ぐ
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+# aws_run ツールの args に指定させないグローバルオプション。AWS CLI は argparse の allow_abbrev により
+# 長オプションの省略形 (--prof, --p 等) を受理し、同名オプションは後勝ちになるため、
+# 同じ argparse に拒否対象だけを登録して省略形ごと検出する
+DENIED_VALUE_OPTIONS = ("--profile", "--endpoint-url", "--ca-bundle")
+DENIED_FLAG_OPTIONS = ("--debug", "--no-verify-ssl")
+# ホストの ~/.aws を書き換える・認証情報を出力する・ブラウザや pager を起動するサブコマンド
+DENIED_SUBCOMMANDS = frozenset({"configure", "sso", "help"})
+# ホストのファイルを参照する引数
+DENIED_URI_SCHEMES = ("file://", "fileb://")
+DENIED_PATH_PREFIXES = ("/", "~", "./", "../")
 
 # JSON-RPC エラーコード (gh-proxy と同じ)
 PARSE_ERROR = -32700
@@ -366,6 +378,106 @@ def validate_arguments(arguments: Any, entries: List[CredentialEntry]) -> Creden
             return entry
 
     raise ValidationError(f"未知の name: {name}")
+
+
+def build_denied_option_parser() -> argparse.ArgumentParser:
+    """拒否対象のグローバルオプションのみを認識する argparse.ArgumentParser を作る
+
+    add_help=False で -h/--help を無効化し、allow_abbrev=True (既定) で
+    AWS CLI と同じ長オプションの省略形解釈を再現する。exit_on_error=False により、
+    解析エラー時は原則 SystemExit ではなく argparse.ArgumentError を送出させる。
+    """
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=True, exit_on_error=False)
+    for option in DENIED_VALUE_OPTIONS:
+        parser.add_argument(option, dest=option, default=None)
+    for option in DENIED_FLAG_OPTIONS:
+        parser.add_argument(option, dest=option, action="store_true", default=False)
+    return parser
+
+
+def find_denied_option(args: Sequence[str]) -> Optional[str]:
+    """args に拒否対象のグローバルオプション (値付き・フラグ) が含まれていればオプション名を返す
+
+    省略形 (--prof, --p 等) で指定された場合も allow_abbrev により検出できる。
+    値の無い --profile 単独指定など argparse が解析エラーとする入力は、
+    どのオプションに該当したかを例外メッセージから特定せず「拒否対象オプションに該当した」
+    ものとして固定の文字列を返す。exit_on_error=False でも Python のバージョンによっては
+    SystemExit が送出される経路があるため、これも同様に扱う。
+    """
+    parser = build_denied_option_parser()
+    try:
+        namespace, _unknown = parser.parse_known_args(list(args))
+    except (argparse.ArgumentError, SystemExit):
+        return "(拒否対象オプション)"
+
+    for option in DENIED_VALUE_OPTIONS:
+        if getattr(namespace, option) is not None:
+            return option
+
+    for option in DENIED_FLAG_OPTIONS:
+        if getattr(namespace, option):
+            return option
+
+    return None
+
+
+def find_denied_subcommand(args: Sequence[str]) -> Optional[str]:
+    """args に DENIED_SUBCOMMANDS のいずれかが含まれていれば、その値を返す (位置を問わない)"""
+    for arg in args:
+        if arg in DENIED_SUBCOMMANDS:
+            return arg
+    return None
+
+
+def find_host_path_reference(args: Sequence[str]) -> Optional[str]:
+    """args にホストのファイルを参照する引数が含まれていれば、その値を返す
+
+    小文字化した値が DENIED_URI_SCHEMES のいずれかを含む (--body=fileb://x のような
+    オプション連結形式も対象)、DENIED_PATH_PREFIXES のいずれかで始まる、パス途中に /../ を含む、
+    ".." と完全一致する、のいずれかを検出する。
+    """
+    for arg in args:
+        lowered = arg.lower()
+        if any(scheme in lowered for scheme in DENIED_URI_SCHEMES):
+            return arg
+        if arg.startswith(DENIED_PATH_PREFIXES):
+            return arg
+        if "/../" in arg:
+            return arg
+        if arg == "..":
+            return arg
+    return None
+
+
+def validate_aws_args(args: Any) -> None:
+    """aws_run ツールが受け取る args (aws --profile <profile> <args...> として実行される) を検証する
+
+    profile やエンドポイントの上書き、ホストの設定変更・認証情報出力を伴うサブコマンド、
+    ホストのファイルを参照する引数を拒否する。
+    """
+    if not isinstance(args, list):
+        raise ValidationError("args は文字列の配列である必要があります")
+
+    if not args:
+        raise ValidationError("args には 1 つ以上の引数が必要です")
+
+    for i, value in enumerate(args):
+        if not isinstance(value, str):
+            raise ValidationError(f"args の要素は文字列である必要があります (位置 {i})")
+        if value == "" or "\n" in value or "\r" in value or "\0" in value:
+            raise ValidationError(f"args に空文字列または改行を含む要素があります (位置 {i})")
+
+    denied_option = find_denied_option(args)
+    if denied_option is not None:
+        raise ValidationError(f"指定できないオプションです: {denied_option}")
+
+    denied_subcommand = find_denied_subcommand(args)
+    if denied_subcommand is not None:
+        raise ValidationError(f"指定できないサブコマンドです: {denied_subcommand}")
+
+    host_path_reference = find_host_path_reference(args)
+    if host_path_reference is not None:
+        raise ValidationError(f"ホストのファイルを参照する引数は指定できません: {host_path_reference}")
 
 
 def handle_initialize(params: Dict[str, Any]) -> Dict[str, Any]:
