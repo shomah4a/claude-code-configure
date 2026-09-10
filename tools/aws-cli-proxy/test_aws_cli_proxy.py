@@ -18,8 +18,8 @@ from typing import Any, Dict, List, Optional, Tuple
 DUMMY_ACCESS_KEY_ID = "AKIAEXAMPLESECRET"
 DUMMY_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCyEXAMPLEKEY"
 
-_MODULE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aws-credential.py")
-_SPEC = importlib.util.spec_from_file_location("aws_credential", _MODULE_PATH)
+_MODULE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aws-cli-proxy.py")
+_SPEC = importlib.util.spec_from_file_location("aws_cli_proxy", _MODULE_PATH)
 aws_credential = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(aws_credential)
 

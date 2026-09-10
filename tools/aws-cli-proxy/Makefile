@@ -6,4 +6,4 @@ venv/.initialized: requirements.txt
 	touch $@
 
 serve: venv/.initialized
-	venv/bin/python3 aws-credential.py
+	venv/bin/python3 aws-cli-proxy.py
