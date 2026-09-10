@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-AWS Credential MCP Proxy Server
+AWS CLI MCP Proxy Server
 
-ホスト側の AWS 認証情報を `aws configure export-credentials` で取得し、
-MCP ツールとして環境変数名をキーとする JSON で返す HTTP JSON-RPC サーバーです。
-
-設定ファイル (aws-credential.yml) に記載された name ごとに、対応する
-AWS プロファイルの認証情報を取得できます。
+設定ファイル (aws-cli-proxy.yml) に記載されたプロファイルを固定して、
+ホスト側で aws コマンドを実行し結果を返す HTTP JSON-RPC (MCP) サーバーです。
+認証情報はホストの aws プロセス内で解決され、クライアントには渡しません。
 """
 
 import dataclasses
@@ -24,18 +22,18 @@ import yaml
 
 # サーバー設定
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_NAME = "aws-credential"
+SERVER_NAME = "aws-cli-proxy"
 SERVER_VERSION = "1.0.0"
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "aws-credential.yml"
-CONFIG_PATH_ENV = "AWS_CREDENTIAL_PROXY_CONFIG"
-TIMEOUT_ENV = "AWS_CREDENTIAL_PROXY_TIMEOUT"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "aws-cli-proxy.yml"
+CONFIG_PATH_ENV = "AWS_CLI_PROXY_CONFIG"
+TIMEOUT_ENV = "AWS_CLI_PROXY_TIMEOUT"
 DEFAULT_TIMEOUT_SEC = 30
-BIND_ENV = "AWS_CREDENTIAL_PROXY_BIND"
+BIND_ENV = "AWS_CLI_PROXY_BIND"
 DEFAULT_BIND = "127.0.0.1"
-PORT_ENV = "AWS_CREDENTIAL_PROXY_PORT"
+PORT_ENV = "AWS_CLI_PROXY_PORT"
 DEFAULT_PORT = 30722
 TOOL_NAME = "aws_get_credentials"
-ALLOWED_HOSTS_ENV = "AWS_CREDENTIAL_PROXY_ALLOWED_HOSTS"
+ALLOWED_HOSTS_ENV = "AWS_CLI_PROXY_ALLOWED_HOSTS"
 # loopback を指すホスト名。Host / Origin ヘッダのホスト部がこれ以外なら 403 (DNS リバインディング対策)
 DEFAULT_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
@@ -58,7 +56,7 @@ RunCommand = Callable[[List[str]], Tuple[str, str, int]]
 
 @dataclasses.dataclass(frozen=True)
 class CredentialEntry:
-    """設定ファイルの credentials 配下の 1 エントリ"""
+    """設定ファイルの profiles 配下の 1 エントリ"""
 
     name: str
     profile: str
@@ -114,22 +112,22 @@ def parse_entries(raw: Any, report: Callable[[str], None]) -> List[CredentialEnt
     個々のエントリが不正な場合はスキップして report で通知し、
     設定ファイル自体の構造が不正、または有効なエントリが 0 件の場合は ConfigError を送出する。
     """
-    if not isinstance(raw, dict) or "credentials" not in raw:
-        raise ConfigError("設定ファイルにcredentialsキーがありません")
+    if not isinstance(raw, dict) or "profiles" not in raw:
+        raise ConfigError("設定ファイルにprofilesキーがありません")
 
-    credentials = raw["credentials"]
-    if not isinstance(credentials, dict):
-        raise ConfigError(f"credentialsは辞書である必要がありますが{type(credentials).__name__}でした")
+    profiles = raw["profiles"]
+    if not isinstance(profiles, dict):
+        raise ConfigError(f"profilesは辞書である必要がありますが{type(profiles).__name__}でした")
 
     entries: List[CredentialEntry] = []
-    for name, conf in credentials.items():
+    for name, conf in profiles.items():
         try:
             entries.append(parse_credential_entry(name, conf))
         except ValueError as e:
             report(f"エントリ '{name}' をスキップします: {e}")
 
     if not entries:
-        raise ConfigError("有効なcredentialsエントリがありません")
+        raise ConfigError("有効なprofilesエントリがありません")
 
     return entries
 
@@ -337,7 +335,7 @@ def build_tools(entries: List[CredentialEntry]) -> List[Dict[str, Any]]:
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "取得する認証情報の名前 (aws-credential.yml の credentials 配下のキー)",
+                        "description": "取得する認証情報の名前 (aws-cli-proxy.yml の profiles 配下のキー)",
                         "enum": [entry.name for entry in entries],
                     }
                 },
@@ -680,7 +678,7 @@ def main() -> int:
     allowed_hosts = resolve_allowed_hosts(environ)
 
     # tool-launcher が stdout を pipe で受けるため、ブロックバッファリングで起動メッセージが滞留しないよう flush する
-    print("AWS Credential MCP Proxy Server", flush=True)
+    print("AWS CLI MCP Proxy Server", flush=True)
     print(f"Protocol Version: {PROTOCOL_VERSION}", flush=True)
     print(f"Server: {SERVER_NAME} v{SERVER_VERSION}", flush=True)
     print(f"設定ファイル: {config_path}", flush=True)

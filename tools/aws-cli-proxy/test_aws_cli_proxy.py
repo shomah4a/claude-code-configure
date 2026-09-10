@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""aws-credential.py のユニットテスト
+"""aws-cli-proxy.py のユニットテスト
 
 ファイル名にハイフンを含むため、importlib で直接ロードする。
 """
@@ -20,8 +20,8 @@ DUMMY_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCyEXAMPLEKEY"
 
 _MODULE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aws-cli-proxy.py")
 _SPEC = importlib.util.spec_from_file_location("aws_cli_proxy", _MODULE_PATH)
-aws_credential = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(aws_credential)
+aws_cli_proxy = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(aws_cli_proxy)
 
 
 class ParseEntriesTest(unittest.TestCase):
@@ -32,18 +32,18 @@ class ParseEntriesTest(unittest.TestCase):
 
     def test_profileを持つ1エントリを読み込める(self):
         messages: List[str] = []
-        entries = aws_credential.parse_entries(
-            {"credentials": {"dev": {"profile": "my-dev-profile"}}},
+        entries = aws_cli_proxy.parse_entries(
+            {"profiles": {"dev": {"profile": "my-dev-profile"}}},
             self._report(messages),
         )
-        self.assertEqual(entries, [aws_credential.CredentialEntry(name="dev", profile="my-dev-profile")])
+        self.assertEqual(entries, [aws_cli_proxy.CredentialEntry(name="dev", profile="my-dev-profile")])
         self.assertEqual(messages, [])
 
     def test_複数エントリを記載順に読み込める(self):
         messages: List[str] = []
-        entries = aws_credential.parse_entries(
+        entries = aws_cli_proxy.parse_entries(
             {
-                "credentials": {
+                "profiles": {
                     "dev": {"profile": "dev-profile"},
                     "staging": {"profile": "staging-profile"},
                     "prod": {"profile": "prod-profile"},
@@ -58,9 +58,9 @@ class ParseEntriesTest(unittest.TestCase):
 
     def test_profileが無いエントリはスキップされreportにメッセージが渡る(self):
         messages: List[str] = []
-        entries = aws_credential.parse_entries(
+        entries = aws_cli_proxy.parse_entries(
             {
-                "credentials": {
+                "profiles": {
                     "dev": {"profile": "dev-profile"},
                     "broken": {},
                 }
@@ -73,9 +73,9 @@ class ParseEntriesTest(unittest.TestCase):
 
     def test_nameが先頭ハイフンのエントリはスキップされる(self):
         messages: List[str] = []
-        entries = aws_credential.parse_entries(
+        entries = aws_cli_proxy.parse_entries(
             {
-                "credentials": {
+                "profiles": {
                     "dev": {"profile": "dev-profile"},
                     "-evil": {"profile": "evil-profile"},
                 }
@@ -86,9 +86,9 @@ class ParseEntriesTest(unittest.TestCase):
 
     def test_profileが先頭ハイフンのエントリはスキップされる(self):
         messages: List[str] = []
-        entries = aws_credential.parse_entries(
+        entries = aws_cli_proxy.parse_entries(
             {
-                "credentials": {
+                "profiles": {
                     "dev": {"profile": "dev-profile"},
                     "broken": {"profile": "-evil-profile"},
                 }
@@ -99,9 +99,9 @@ class ParseEntriesTest(unittest.TestCase):
 
     def test_profile以外の未知キーを持つエントリはスキップされる(self):
         messages: List[str] = []
-        entries = aws_credential.parse_entries(
+        entries = aws_cli_proxy.parse_entries(
             {
-                "credentials": {
+                "profiles": {
                     "dev": {"profile": "dev-profile"},
                     "broken": {"profile": "broken-profile", "region": "ap-northeast-1"},
                 }
@@ -110,21 +110,21 @@ class ParseEntriesTest(unittest.TestCase):
         )
         self.assertEqual([entry.name for entry in entries], ["dev"])
 
-    def test_credentialsキーが無いとConfigErrorになる(self):
+    def test_profilesキーが無いとConfigErrorになる(self):
         messages: List[str] = []
-        with self.assertRaises(aws_credential.ConfigError):
-            aws_credential.parse_entries({}, self._report(messages))
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.parse_entries({}, self._report(messages))
 
-    def test_credentialsがdictでないとConfigErrorになる(self):
+    def test_profilesがdictでないとConfigErrorになる(self):
         messages: List[str] = []
-        with self.assertRaises(aws_credential.ConfigError):
-            aws_credential.parse_entries({"credentials": ["dev"]}, self._report(messages))
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.parse_entries({"profiles": ["dev"]}, self._report(messages))
 
     def test_有効エントリが0件だとConfigErrorになる(self):
         messages: List[str] = []
-        with self.assertRaises(aws_credential.ConfigError):
-            aws_credential.parse_entries(
-                {"credentials": {"broken": {}}},
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.parse_entries(
+                {"profiles": {"broken": {}}},
                 self._report(messages),
             )
 
@@ -133,7 +133,7 @@ class LoadConfigTest(unittest.TestCase):
     """load_config のテスト"""
 
     def _write_yaml(self, tmp_path: Path, content: str) -> Path:
-        config_path = tmp_path / "aws-credential.yml"
+        config_path = tmp_path / "aws-cli-proxy.yml"
         config_path.write_text(textwrap.dedent(content), encoding="utf-8")
         return config_path
 
@@ -141,56 +141,56 @@ class LoadConfigTest(unittest.TestCase):
         messages: List[str] = []
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "nonexistent.yml"
-            with self.assertRaises(aws_credential.ConfigError):
-                aws_credential.load_config(config_path, messages.append)
+            with self.assertRaises(aws_cli_proxy.ConfigError):
+                aws_cli_proxy.load_config(config_path, messages.append)
 
     def test_ファイルからprofileを持つエントリを読み込める(self):
         messages: List[str] = []
         with tempfile.TemporaryDirectory() as tmp:
             config_path = self._write_yaml(Path(tmp), """\
-                credentials:
+                profiles:
                   dev:
                     profile: my-dev-profile
             """)
-            entries = aws_credential.load_config(config_path, messages.append)
+            entries = aws_cli_proxy.load_config(config_path, messages.append)
             self.assertEqual(
                 entries,
-                [aws_credential.CredentialEntry(name="dev", profile="my-dev-profile")],
+                [aws_cli_proxy.CredentialEntry(name="dev", profile="my-dev-profile")],
             )
 
     def test_YAML構文エラーの設定ファイルはConfigErrorになる(self):
         messages: List[str] = []
         with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "aws-credential.yml"
+            config_path = Path(tmp) / "aws-cli-proxy.yml"
             # インデントが不正な YAML (マッピングとリストの混在) を書く
             config_path.write_text(
-                "credentials:\n  dev:\n  profile: my-dev-profile\n - broken\n",
+                "profiles:\n  dev:\n  profile: my-dev-profile\n - broken\n",
                 encoding="utf-8",
             )
-            with self.assertRaises(aws_credential.ConfigError):
-                aws_credential.load_config(config_path, messages.append)
+            with self.assertRaises(aws_cli_proxy.ConfigError):
+                aws_cli_proxy.load_config(config_path, messages.append)
 
     def test_設定ファイルのパスがディレクトリだとConfigErrorになる(self):
         messages: List[str] = []
         with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "aws-credential.yml"
+            config_path = Path(tmp) / "aws-cli-proxy.yml"
             config_path.mkdir()
-            with self.assertRaises(aws_credential.ConfigError):
-                aws_credential.load_config(config_path, messages.append)
+            with self.assertRaises(aws_cli_proxy.ConfigError):
+                aws_cli_proxy.load_config(config_path, messages.append)
 
 
 class ResolveConfigPathTest(unittest.TestCase):
     """resolve_config_path のテスト"""
 
     def test_環境変数が設定されていればそのパスが使われる(self):
-        path = aws_credential.resolve_config_path(
-            {aws_credential.CONFIG_PATH_ENV: "/custom/aws-credential.yml"}
+        path = aws_cli_proxy.resolve_config_path(
+            {aws_cli_proxy.CONFIG_PATH_ENV: "/custom/aws-cli-proxy.yml"}
         )
-        self.assertEqual(path, Path("/custom/aws-credential.yml"))
+        self.assertEqual(path, Path("/custom/aws-cli-proxy.yml"))
 
     def test_環境変数が無ければ既定パスが使われる(self):
-        path = aws_credential.resolve_config_path({})
-        self.assertEqual(path, aws_credential.DEFAULT_CONFIG_PATH)
+        path = aws_cli_proxy.resolve_config_path({})
+        self.assertEqual(path, aws_cli_proxy.DEFAULT_CONFIG_PATH)
 
 
 class BuildAwsCommandArgsTest(unittest.TestCase):
@@ -198,14 +198,14 @@ class BuildAwsCommandArgsTest(unittest.TestCase):
 
     def test_export_credentials取得の引数リストを組み立てる(self):
         self.assertEqual(
-            aws_credential.build_export_credentials_args("my-dev-profile"),
+            aws_cli_proxy.build_export_credentials_args("my-dev-profile"),
             ["aws", "configure", "export-credentials", "--profile", "my-dev-profile",
              "--format", "process"],
         )
 
     def test_region取得の引数リストを組み立てる(self):
         self.assertEqual(
-            aws_credential.build_get_region_args("my-dev-profile"),
+            aws_cli_proxy.build_get_region_args("my-dev-profile"),
             ["aws", "configure", "get", "region", "--profile", "my-dev-profile"],
         )
 
@@ -225,12 +225,12 @@ class ParseExportCredentialsOutputTest(unittest.TestCase):
         return payload
 
     def test_全フィールドありの出力を解析できる(self):
-        credentials = aws_credential.parse_export_credentials_output(
+        credentials = aws_cli_proxy.parse_export_credentials_output(
             json.dumps(self._valid_payload())
         )
         self.assertEqual(
             credentials,
-            aws_credential.AwsCredentials(
+            aws_cli_proxy.AwsCredentials(
                 access_key_id=DUMMY_ACCESS_KEY_ID,
                 secret_access_key=DUMMY_SECRET_ACCESS_KEY,
                 session_token="dummy-session-token",
@@ -242,37 +242,37 @@ class ParseExportCredentialsOutputTest(unittest.TestCase):
         payload = self._valid_payload()
         del payload["SessionToken"]
         del payload["Expiration"]
-        credentials = aws_credential.parse_export_credentials_output(json.dumps(payload))
+        credentials = aws_cli_proxy.parse_export_credentials_output(json.dumps(payload))
         self.assertIsNone(credentials.session_token)
         self.assertIsNone(credentials.expiration)
 
     def test_未知フィールドは無視される(self):
         payload = self._valid_payload(Unknown="ignored-value")
-        credentials = aws_credential.parse_export_credentials_output(json.dumps(payload))
+        credentials = aws_cli_proxy.parse_export_credentials_output(json.dumps(payload))
         self.assertEqual(credentials.access_key_id, DUMMY_ACCESS_KEY_ID)
 
     def test_不正なJSONのときエラーメッセージにダミー秘密が含まれない(self):
         broken_json = f"not-json {DUMMY_ACCESS_KEY_ID} {DUMMY_SECRET_ACCESS_KEY}"
-        with self.assertRaises(aws_credential.CredentialFetchError) as ctx:
-            aws_credential.parse_export_credentials_output(broken_json)
+        with self.assertRaises(aws_cli_proxy.CredentialFetchError) as ctx:
+            aws_cli_proxy.parse_export_credentials_output(broken_json)
         self.assertNotIn(DUMMY_ACCESS_KEY_ID, str(ctx.exception))
         self.assertNotIn(DUMMY_SECRET_ACCESS_KEY, str(ctx.exception))
 
     def test_JSON配列を渡すとCredentialFetchErrorになる(self):
-        with self.assertRaises(aws_credential.CredentialFetchError):
-            aws_credential.parse_export_credentials_output(json.dumps([1, 2, 3]))
+        with self.assertRaises(aws_cli_proxy.CredentialFetchError):
+            aws_cli_proxy.parse_export_credentials_output(json.dumps([1, 2, 3]))
 
     def test_Versionが2だとCredentialFetchErrorになる(self):
-        with self.assertRaises(aws_credential.CredentialFetchError):
-            aws_credential.parse_export_credentials_output(
+        with self.assertRaises(aws_cli_proxy.CredentialFetchError):
+            aws_cli_proxy.parse_export_credentials_output(
                 json.dumps(self._valid_payload(Version=2))
             )
 
     def test_AccessKeyId欠落はCredentialFetchErrorでメッセージにフィールド名が含まれる(self):
         payload = self._valid_payload()
         del payload["AccessKeyId"]
-        with self.assertRaises(aws_credential.CredentialFetchError) as ctx:
-            aws_credential.parse_export_credentials_output(json.dumps(payload))
+        with self.assertRaises(aws_cli_proxy.CredentialFetchError) as ctx:
+            aws_cli_proxy.parse_export_credentials_output(json.dumps(payload))
         self.assertIn("AccessKeyId", str(ctx.exception))
 
 
@@ -287,10 +287,10 @@ class BuildEnvMappingTest(unittest.TestCase):
             "expiration": None,
         }
         base.update(overrides)
-        return aws_credential.AwsCredentials(**base)
+        return aws_cli_proxy.AwsCredentials(**base)
 
     def test_session_tokenとexpirationとregionがある場合の挿入順(self):
-        env = aws_credential.build_env_mapping(
+        env = aws_cli_proxy.build_env_mapping(
             self._credentials(session_token="dummy-session-token", expiration="2026-01-01T00:00:00Z"),
             region="ap-northeast-1",
         )
@@ -303,7 +303,7 @@ class BuildEnvMappingTest(unittest.TestCase):
         self.assertEqual(env["AWS_DEFAULT_REGION"], "ap-northeast-1")
 
     def test_session_tokenとexpirationとregionが無い場合はキーが含まれない(self):
-        env = aws_credential.build_env_mapping(self._credentials(), region=None)
+        env = aws_cli_proxy.build_env_mapping(self._credentials(), region=None)
         self.assertEqual(
             list(env.keys()),
             ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
@@ -321,14 +321,14 @@ class FetchRegionTest(unittest.TestCase):
     def test_成功時はstripしたregionを返す(self):
         run_command = self._run_command_returning(("  ap-northeast-1  \n", "", 0))
         messages: List[str] = []
-        region = aws_credential.fetch_region("dev", run_command, messages.append)
+        region = aws_cli_proxy.fetch_region("dev", run_command, messages.append)
         self.assertEqual(region, "ap-northeast-1")
         self.assertEqual(messages, [])
 
     def test_終了コードが非0の場合はNoneを返しreportに終了コードが渡る(self):
         run_command = self._run_command_returning(("", "profile not found", 1))
         messages: List[str] = []
-        region = aws_credential.fetch_region("dev", run_command, messages.append)
+        region = aws_cli_proxy.fetch_region("dev", run_command, messages.append)
         self.assertIsNone(region)
         self.assertEqual(len(messages), 1)
         self.assertIn("1", messages[0])
@@ -336,7 +336,7 @@ class FetchRegionTest(unittest.TestCase):
     def test_出力が空文字の場合はNoneを返す(self):
         run_command = self._run_command_returning(("   \n", "", 0))
         messages: List[str] = []
-        region = aws_credential.fetch_region("dev", run_command, messages.append)
+        region = aws_cli_proxy.fetch_region("dev", run_command, messages.append)
         self.assertIsNone(region)
 
 
@@ -367,15 +367,15 @@ class FetchCredentialsTest(unittest.TestCase):
             region_result=("ap-northeast-1", "", 0),
         )
         messages: List[str] = []
-        env = aws_credential.fetch_credentials("dev", run_command, messages.append)
+        env = aws_cli_proxy.fetch_credentials("dev", run_command, messages.append)
         self.assertEqual(env["AWS_ACCESS_KEY_ID"], DUMMY_ACCESS_KEY_ID)
         self.assertEqual(env["AWS_REGION"], "ap-northeast-1")
 
     def test_export失敗時のメッセージには終了コードのみ含まれstderrはreportにのみ渡る(self):
         run_command = self._make_run_command(export_result=("", "credential detail leak", 2))
         messages: List[str] = []
-        with self.assertRaises(aws_credential.CredentialFetchError) as ctx:
-            aws_credential.fetch_credentials("dev", run_command, messages.append)
+        with self.assertRaises(aws_cli_proxy.CredentialFetchError) as ctx:
+            aws_cli_proxy.fetch_credentials("dev", run_command, messages.append)
         self.assertIn("2", str(ctx.exception))
         self.assertNotIn("credential detail leak", str(ctx.exception))
         self.assertTrue(any("credential detail leak" in message for message in messages))
@@ -386,7 +386,7 @@ class FetchCredentialsTest(unittest.TestCase):
             region_result=("", "region error", 1),
         )
         messages: List[str] = []
-        env = aws_credential.fetch_credentials("dev", run_command, messages.append)
+        env = aws_cli_proxy.fetch_credentials("dev", run_command, messages.append)
         self.assertEqual(env["AWS_ACCESS_KEY_ID"], DUMMY_ACCESS_KEY_ID)
         self.assertNotIn("AWS_REGION", env)
 
@@ -395,16 +395,16 @@ class FetchCredentialsTest(unittest.TestCase):
             export_result=("", "Invalid choice: 'export-credentials'", 2)
         )
         messages: List[str] = []
-        with self.assertRaises(aws_credential.CredentialFetchError) as ctx:
-            aws_credential.fetch_credentials("dev", run_command, messages.append)
+        with self.assertRaises(aws_cli_proxy.CredentialFetchError) as ctx:
+            aws_cli_proxy.fetch_credentials("dev", run_command, messages.append)
         self.assertIn("AWS CLI v2", str(ctx.exception))
 
     def test_不正なJSON応答のときエラーメッセージにダミー秘密が含まれない(self):
         broken_stdout = f"not-json {DUMMY_ACCESS_KEY_ID} {DUMMY_SECRET_ACCESS_KEY}"
         run_command = self._make_run_command(export_result=(broken_stdout, "", 0))
         messages: List[str] = []
-        with self.assertRaises(aws_credential.CredentialFetchError) as ctx:
-            aws_credential.fetch_credentials("dev", run_command, messages.append)
+        with self.assertRaises(aws_cli_proxy.CredentialFetchError) as ctx:
+            aws_cli_proxy.fetch_credentials("dev", run_command, messages.append)
         self.assertNotIn(DUMMY_ACCESS_KEY_ID, str(ctx.exception))
         self.assertNotIn(DUMMY_SECRET_ACCESS_KEY, str(ctx.exception))
 
@@ -413,15 +413,15 @@ class ResolveTimeoutSecTest(unittest.TestCase):
     """resolve_timeout_sec のテスト"""
 
     def test_環境変数が無ければ既定値を使う(self):
-        self.assertEqual(aws_credential.resolve_timeout_sec({}), aws_credential.DEFAULT_TIMEOUT_SEC)
+        self.assertEqual(aws_cli_proxy.resolve_timeout_sec({}), aws_cli_proxy.DEFAULT_TIMEOUT_SEC)
 
     def test_環境変数が数値文字列であればその値を使う(self):
-        timeout_sec = aws_credential.resolve_timeout_sec({aws_credential.TIMEOUT_ENV: "45"})
+        timeout_sec = aws_cli_proxy.resolve_timeout_sec({aws_cli_proxy.TIMEOUT_ENV: "45"})
         self.assertEqual(timeout_sec, 45)
 
     def test_環境変数が数値でなければConfigErrorになる(self):
-        with self.assertRaises(aws_credential.ConfigError):
-            aws_credential.resolve_timeout_sec({aws_credential.TIMEOUT_ENV: "not-a-number"})
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.resolve_timeout_sec({aws_cli_proxy.TIMEOUT_ENV: "not-a-number"})
 
 
 class CreateRunCommandTest(unittest.TestCase):
@@ -431,20 +431,20 @@ class CreateRunCommandTest(unittest.TestCase):
         return {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
 
     def test_標準出力と標準エラー出力と終了コードを取得できる(self):
-        run_command = aws_credential.create_run_command(timeout_sec=5, env=self._base_env())
+        run_command = aws_cli_proxy.create_run_command(timeout_sec=5, env=self._base_env())
         stdout, stderr, code = run_command(["sh", "-c", "echo out; echo err 1>&2; exit 3"])
         self.assertEqual(stdout, "out\n")
         self.assertEqual(stderr, "err\n")
         self.assertEqual(code, 3)
 
     def test_存在しないコマンドはCredentialFetchErrorになる(self):
-        run_command = aws_credential.create_run_command(timeout_sec=5, env=self._base_env())
-        with self.assertRaises(aws_credential.CredentialFetchError):
-            run_command(["aws-credential-test-nonexistent-command-xyz"])
+        run_command = aws_cli_proxy.create_run_command(timeout_sec=5, env=self._base_env())
+        with self.assertRaises(aws_cli_proxy.CredentialFetchError):
+            run_command(["aws-cli-proxy-test-nonexistent-command-xyz"])
 
     def test_タイムアウトするとCredentialFetchErrorになる(self):
-        run_command = aws_credential.create_run_command(timeout_sec=1, env=self._base_env())
-        with self.assertRaises(aws_credential.CredentialFetchError):
+        run_command = aws_cli_proxy.create_run_command(timeout_sec=1, env=self._base_env())
+        with self.assertRaises(aws_cli_proxy.CredentialFetchError):
             run_command(["sh", "-c", "sleep 5"])
 
     def test_envに渡した変数がそのまま子プロセスに見える(self):
@@ -453,7 +453,7 @@ class CreateRunCommandTest(unittest.TestCase):
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "AWS_VAULT_BACKEND": "file",
         }
-        run_command = aws_credential.create_run_command(timeout_sec=5, env=env)
+        run_command = aws_cli_proxy.create_run_command(timeout_sec=5, env=env)
         stdout, _stderr, code = run_command(["sh", "-c", "echo $HOME-$AWS_VAULT_BACKEND"])
         self.assertEqual(code, 0)
         self.assertEqual(stdout, "test-home-value-file\n")
@@ -464,18 +464,18 @@ class BuildToolsTest(unittest.TestCase):
 
     def test_enumに記載順でnameが入る(self):
         entries = [
-            aws_credential.CredentialEntry(name="dev", profile="dev-profile"),
-            aws_credential.CredentialEntry(name="staging", profile="staging-profile"),
+            aws_cli_proxy.CredentialEntry(name="dev", profile="dev-profile"),
+            aws_cli_proxy.CredentialEntry(name="staging", profile="staging-profile"),
         ]
-        tools = aws_credential.build_tools(entries)
+        tools = aws_cli_proxy.build_tools(entries)
         self.assertEqual(
             tools[0]["inputSchema"]["properties"]["name"]["enum"],
             ["dev", "staging"],
         )
 
     def test_requiredにnameが入る(self):
-        tools = aws_credential.build_tools(
-            [aws_credential.CredentialEntry(name="dev", profile="dev-profile")]
+        tools = aws_cli_proxy.build_tools(
+            [aws_cli_proxy.CredentialEntry(name="dev", profile="dev-profile")]
         )
         self.assertEqual(tools[0]["inputSchema"]["required"], ["name"])
 
@@ -485,41 +485,41 @@ class ValidateArgumentsTest(unittest.TestCase):
 
     def _entries(self) -> List:
         return [
-            aws_credential.CredentialEntry(name="dev", profile="dev-profile"),
-            aws_credential.CredentialEntry(name="staging", profile="staging-profile"),
+            aws_cli_proxy.CredentialEntry(name="dev", profile="dev-profile"),
+            aws_cli_proxy.CredentialEntry(name="staging", profile="staging-profile"),
         ]
 
     def test_一致するnameのCredentialEntryを返す(self):
-        entry = aws_credential.validate_arguments({"name": "staging"}, self._entries())
+        entry = aws_cli_proxy.validate_arguments({"name": "staging"}, self._entries())
         self.assertEqual(
             entry,
-            aws_credential.CredentialEntry(name="staging", profile="staging-profile"),
+            aws_cli_proxy.CredentialEntry(name="staging", profile="staging-profile"),
         )
 
     def test_nameが欠落しているとValidationErrorになる(self):
-        with self.assertRaises(aws_credential.ValidationError):
-            aws_credential.validate_arguments({}, self._entries())
+        with self.assertRaises(aws_cli_proxy.ValidationError):
+            aws_cli_proxy.validate_arguments({}, self._entries())
 
     def test_未知のフィールドを含むとValidationErrorになる(self):
-        with self.assertRaises(aws_credential.ValidationError):
-            aws_credential.validate_arguments(
+        with self.assertRaises(aws_cli_proxy.ValidationError):
+            aws_cli_proxy.validate_arguments(
                 {"name": "dev", "region": "ap-northeast-1"}, self._entries()
             )
 
     def test_未登録のnameを指定するとValidationErrorになる(self):
-        with self.assertRaises(aws_credential.ValidationError):
-            aws_credential.validate_arguments({"name": "unknown"}, self._entries())
+        with self.assertRaises(aws_cli_proxy.ValidationError):
+            aws_cli_proxy.validate_arguments({"name": "unknown"}, self._entries())
 
     def test_argumentsがdictでないとValidationErrorになる(self):
-        with self.assertRaises(aws_credential.ValidationError):
-            aws_credential.validate_arguments(["dev"], self._entries())
+        with self.assertRaises(aws_cli_proxy.ValidationError):
+            aws_cli_proxy.validate_arguments(["dev"], self._entries())
 
 
 class HandleToolsCallTest(unittest.TestCase):
     """handle_tools_call のテスト"""
 
     def _entries(self) -> List:
-        return [aws_credential.CredentialEntry(name="dev", profile="dev-profile")]
+        return [aws_cli_proxy.CredentialEntry(name="dev", profile="dev-profile")]
 
     def _make_run_command(self, export_stdout: str, export_code: int = 0):
         """コマンド引数を見て export-credentials と get region の戻り値を切り替える偽の RunCommand"""
@@ -539,8 +539,8 @@ class HandleToolsCallTest(unittest.TestCase):
     def test_成功時はJSON形式のtextにAWS_ACCESS_KEY_IDを含む(self):
         run_command = self._make_run_command(self._valid_export_stdout())
         messages: List[str] = []
-        result = aws_credential.handle_tools_call(
-            {"name": aws_credential.TOOL_NAME, "arguments": {"name": "dev"}},
+        result = aws_cli_proxy.handle_tools_call(
+            {"name": aws_cli_proxy.TOOL_NAME, "arguments": {"name": "dev"}},
             self._entries(), run_command, messages.append,
         )
         text = result["content"][0]["text"]
@@ -551,8 +551,8 @@ class HandleToolsCallTest(unittest.TestCase):
         broken_stdout = f"not-json {DUMMY_ACCESS_KEY_ID} {DUMMY_SECRET_ACCESS_KEY}"
         run_command = self._make_run_command(broken_stdout)
         messages: List[str] = []
-        result = aws_credential.handle_tools_call(
-            {"name": aws_credential.TOOL_NAME, "arguments": {"name": "dev"}},
+        result = aws_cli_proxy.handle_tools_call(
+            {"name": aws_cli_proxy.TOOL_NAME, "arguments": {"name": "dev"}},
             self._entries(), run_command, messages.append,
         )
         self.assertTrue(result["isError"])
@@ -564,8 +564,8 @@ class HandleToolsCallTest(unittest.TestCase):
             raise AssertionError("run_command は呼ばれないはずです")
 
         messages: List[str] = []
-        with self.assertRaises(aws_credential.ValidationError):
-            aws_credential.handle_tools_call(
+        with self.assertRaises(aws_cli_proxy.ValidationError):
+            aws_cli_proxy.handle_tools_call(
                 {"name": "unknown_tool", "arguments": {"name": "dev"}},
                 self._entries(), unused_run_command, messages.append,
             )
@@ -575,7 +575,7 @@ class HandleJsonrpcRequestTest(unittest.TestCase):
     """handle_jsonrpc_request のテスト"""
 
     def _entries(self) -> List:
-        return [aws_credential.CredentialEntry(name="dev", profile="dev-profile")]
+        return [aws_cli_proxy.CredentialEntry(name="dev", profile="dev-profile")]
 
     def _no_op_run_command(self, command: List[str]) -> Tuple[str, str, int]:
         return ("", "", 0)
@@ -583,50 +583,50 @@ class HandleJsonrpcRequestTest(unittest.TestCase):
     def test_initializeはserverInfoのnameを返す(self):
         entries = self._entries()
         messages: List[str] = []
-        response = aws_credential.handle_jsonrpc_request(
+        response = aws_cli_proxy.handle_jsonrpc_request(
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
-            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+            entries, aws_cli_proxy.build_tools(entries), self._no_op_run_command, messages.append,
         )
-        self.assertEqual(response["result"]["serverInfo"]["name"], aws_credential.SERVER_NAME)
+        self.assertEqual(response["result"]["serverInfo"]["name"], aws_cli_proxy.SERVER_NAME)
 
     def test_tools_listはツール1件を返す(self):
         entries = self._entries()
         messages: List[str] = []
-        response = aws_credential.handle_jsonrpc_request(
+        response = aws_cli_proxy.handle_jsonrpc_request(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+            entries, aws_cli_proxy.build_tools(entries), self._no_op_run_command, messages.append,
         )
         self.assertEqual(len(response["result"]["tools"]), 1)
 
     def test_未知のメソッドはMETHOD_NOT_FOUNDになる(self):
         entries = self._entries()
         messages: List[str] = []
-        response = aws_credential.handle_jsonrpc_request(
+        response = aws_cli_proxy.handle_jsonrpc_request(
             {"jsonrpc": "2.0", "id": 1, "method": "unknown/method", "params": {}},
-            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+            entries, aws_cli_proxy.build_tools(entries), self._no_op_run_command, messages.append,
         )
-        self.assertEqual(response["error"]["code"], aws_credential.METHOD_NOT_FOUND)
+        self.assertEqual(response["error"]["code"], aws_cli_proxy.METHOD_NOT_FOUND)
 
     def test_jsonrpcが2_0でないとINVALID_REQUESTになる(self):
         entries = self._entries()
         messages: List[str] = []
-        response = aws_credential.handle_jsonrpc_request(
+        response = aws_cli_proxy.handle_jsonrpc_request(
             {"jsonrpc": "1.0", "id": 1, "method": "initialize", "params": {}},
-            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+            entries, aws_cli_proxy.build_tools(entries), self._no_op_run_command, messages.append,
         )
-        self.assertEqual(response["error"]["code"], aws_credential.INVALID_REQUEST)
+        self.assertEqual(response["error"]["code"], aws_cli_proxy.INVALID_REQUEST)
 
     def test_ValidationErrorはINVALID_PARAMSになる(self):
         entries = self._entries()
         messages: List[str] = []
-        response = aws_credential.handle_jsonrpc_request(
+        response = aws_cli_proxy.handle_jsonrpc_request(
             {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {"name": aws_credential.TOOL_NAME, "arguments": {"name": "unknown"}},
+                "params": {"name": aws_cli_proxy.TOOL_NAME, "arguments": {"name": "unknown"}},
             },
-            entries, aws_credential.build_tools(entries), self._no_op_run_command, messages.append,
+            entries, aws_cli_proxy.build_tools(entries), self._no_op_run_command, messages.append,
         )
-        self.assertEqual(response["error"]["code"], aws_credential.INVALID_PARAMS)
+        self.assertEqual(response["error"]["code"], aws_cli_proxy.INVALID_PARAMS)
 
     def test_予期しない例外はINTERNAL_ERRORでダミー秘密がmessageに含まれずreportには含まれる(self):
         entries = self._entries()
@@ -635,14 +635,14 @@ class HandleJsonrpcRequestTest(unittest.TestCase):
             raise RuntimeError(f"{DUMMY_ACCESS_KEY_ID} を含む")
 
         messages: List[str] = []
-        response = aws_credential.handle_jsonrpc_request(
+        response = aws_cli_proxy.handle_jsonrpc_request(
             {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {"name": aws_credential.TOOL_NAME, "arguments": {"name": "dev"}},
+                "params": {"name": aws_cli_proxy.TOOL_NAME, "arguments": {"name": "dev"}},
             },
-            entries, aws_credential.build_tools(entries), failing_run_command, messages.append,
+            entries, aws_cli_proxy.build_tools(entries), failing_run_command, messages.append,
         )
-        self.assertEqual(response["error"]["code"], aws_credential.INTERNAL_ERROR)
+        self.assertEqual(response["error"]["code"], aws_cli_proxy.INTERNAL_ERROR)
         self.assertNotIn(DUMMY_ACCESS_KEY_ID, response["error"]["message"])
         self.assertTrue(any(DUMMY_ACCESS_KEY_ID in message for message in messages))
 
@@ -651,45 +651,45 @@ class ExtractHostNameTest(unittest.TestCase):
     """extract_host_name のテスト"""
 
     def test_ポートありのホスト名からポートを除く(self):
-        self.assertEqual(aws_credential.extract_host_name("localhost:30722"), "localhost")
+        self.assertEqual(aws_cli_proxy.extract_host_name("localhost:30722"), "localhost")
 
     def test_ポートなしのホスト名はそのまま返す(self):
-        self.assertEqual(aws_credential.extract_host_name("localhost"), "localhost")
+        self.assertEqual(aws_cli_proxy.extract_host_name("localhost"), "localhost")
 
     def test_IPv6アドレスはポートだけを除いて角括弧付きで返す(self):
-        self.assertEqual(aws_credential.extract_host_name("[::1]:30722"), "[::1]")
+        self.assertEqual(aws_cli_proxy.extract_host_name("[::1]:30722"), "[::1]")
 
     def test_ポートなしのIPv6アドレスはそのまま返す(self):
-        self.assertEqual(aws_credential.extract_host_name("[::1]"), "[::1]")
+        self.assertEqual(aws_cli_proxy.extract_host_name("[::1]"), "[::1]")
 
     def test_前後の空白を除去する(self):
-        self.assertEqual(aws_credential.extract_host_name("  localhost:30722  "), "localhost")
+        self.assertEqual(aws_cli_proxy.extract_host_name("  localhost:30722  "), "localhost")
 
 
 class ExtractOriginHostTest(unittest.TestCase):
     """extract_origin_host のテスト"""
 
     def test_スキームとポートを含むOriginからホスト名を取り出す(self):
-        self.assertEqual(aws_credential.extract_origin_host("http://localhost:30722"), "localhost")
+        self.assertEqual(aws_cli_proxy.extract_origin_host("http://localhost:30722"), "localhost")
 
     def test_ポートなしのOriginからホスト名を取り出す(self):
-        self.assertEqual(aws_credential.extract_origin_host("https://localhost"), "localhost")
+        self.assertEqual(aws_cli_proxy.extract_origin_host("https://localhost"), "localhost")
 
     def test_IPv6のOriginからホスト名を取り出す(self):
-        self.assertEqual(aws_credential.extract_origin_host("http://[::1]:30722"), "[::1]")
+        self.assertEqual(aws_cli_proxy.extract_origin_host("http://[::1]:30722"), "[::1]")
 
     def test_netlocが空のOriginは空文字列を返す(self):
-        self.assertEqual(aws_credential.extract_origin_host("not-a-url"), "")
+        self.assertEqual(aws_cli_proxy.extract_origin_host("not-a-url"), "")
 
     def test_nullという文字列は空文字列を返す(self):
-        self.assertEqual(aws_credential.extract_origin_host("null"), "")
+        self.assertEqual(aws_cli_proxy.extract_origin_host("null"), "")
 
 
 class WsgiApplicationTest(unittest.TestCase):
     """create_application が返す WSGI アプリケーションのテスト"""
 
     def _entries(self) -> List:
-        return [aws_credential.CredentialEntry(name="dev", profile="dev-profile")]
+        return [aws_cli_proxy.CredentialEntry(name="dev", profile="dev-profile")]
 
     def _run_command(self, command: List[str]) -> Tuple[str, str, int]:
         if "export-credentials" in command:
@@ -701,9 +701,9 @@ class WsgiApplicationTest(unittest.TestCase):
         return ("ap-northeast-1", "", 0)
 
     def _create_app(self, messages: List[str], allowed_hosts=None):
-        return aws_credential.create_application(
+        return aws_cli_proxy.create_application(
             self._entries(), self._run_command, messages.append,
-            allowed_hosts if allowed_hosts is not None else aws_credential.DEFAULT_ALLOWED_HOSTS,
+            allowed_hosts if allowed_hosts is not None else aws_cli_proxy.DEFAULT_ALLOWED_HOSTS,
         )
 
     def _call_app(
@@ -757,7 +757,7 @@ class WsgiApplicationTest(unittest.TestCase):
         app = self._create_app(messages)
         status, parsed = self._call_app(app, b"not-json")
         self.assertTrue(status.startswith("200"))
-        self.assertEqual(parsed["error"]["code"], aws_credential.PARSE_ERROR)
+        self.assertEqual(parsed["error"]["code"], aws_cli_proxy.PARSE_ERROR)
         self.assertIsNone(parsed["id"])
 
     def test_JSON配列の本文はINVALID_REQUESTになる(self):
@@ -765,14 +765,14 @@ class WsgiApplicationTest(unittest.TestCase):
         app = self._create_app(messages)
         status, parsed = self._call_app(app, b"[1, 2, 3]")
         self.assertTrue(status.startswith("200"))
-        self.assertEqual(parsed["error"]["code"], aws_credential.INVALID_REQUEST)
+        self.assertEqual(parsed["error"]["code"], aws_cli_proxy.INVALID_REQUEST)
 
     def test_正常なtools_callは200でcontentを返す(self):
         messages: List[str] = []
         app = self._create_app(messages)
         body = json.dumps({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": aws_credential.TOOL_NAME, "arguments": {"name": "dev"}},
+            "params": {"name": aws_cli_proxy.TOOL_NAME, "arguments": {"name": "dev"}},
         }).encode("utf-8")
         status, parsed = self._call_app(app, body)
         self.assertTrue(status.startswith("200"))
@@ -832,8 +832,8 @@ class WsgiApplicationTest(unittest.TestCase):
 
     def test_環境変数で追加したホストは通る(self):
         messages: List[str] = []
-        allowed_hosts = aws_credential.resolve_allowed_hosts(
-            {aws_credential.ALLOWED_HOSTS_ENV: "host.docker.internal"}
+        allowed_hosts = aws_cli_proxy.resolve_allowed_hosts(
+            {aws_cli_proxy.ALLOWED_HOSTS_ENV: "host.docker.internal"}
         )
         app = self._create_app(messages, allowed_hosts=allowed_hosts)
         status, _parsed = self._call_app(app, b"{}", host="host.docker.internal:30722")
@@ -851,10 +851,10 @@ class ResolveBindTest(unittest.TestCase):
     """resolve_bind のテスト"""
 
     def test_環境変数が無ければ既定値を使う(self):
-        self.assertEqual(aws_credential.resolve_bind({}), aws_credential.DEFAULT_BIND)
+        self.assertEqual(aws_cli_proxy.resolve_bind({}), aws_cli_proxy.DEFAULT_BIND)
 
     def test_環境変数が設定されていればその値を使う(self):
-        bind = aws_credential.resolve_bind({aws_credential.BIND_ENV: "0.0.0.0"})
+        bind = aws_cli_proxy.resolve_bind({aws_cli_proxy.BIND_ENV: "0.0.0.0"})
         self.assertEqual(bind, "0.0.0.0")
 
 
@@ -862,14 +862,14 @@ class ResolvePortTest(unittest.TestCase):
     """resolve_port のテスト"""
 
     def test_環境変数が無ければ既定値を使う(self):
-        self.assertEqual(aws_credential.resolve_port({}), aws_credential.DEFAULT_PORT)
+        self.assertEqual(aws_cli_proxy.resolve_port({}), aws_cli_proxy.DEFAULT_PORT)
 
     def test_環境変数が数値文字列であればその値を使う(self):
-        self.assertEqual(aws_credential.resolve_port({aws_credential.PORT_ENV: "12345"}), 12345)
+        self.assertEqual(aws_cli_proxy.resolve_port({aws_cli_proxy.PORT_ENV: "12345"}), 12345)
 
     def test_環境変数が数値でなければConfigErrorになる(self):
-        with self.assertRaises(aws_credential.ConfigError):
-            aws_credential.resolve_port({aws_credential.PORT_ENV: "not-a-number"})
+        with self.assertRaises(aws_cli_proxy.ConfigError):
+            aws_cli_proxy.resolve_port({aws_cli_proxy.PORT_ENV: "not-a-number"})
 
 
 class ResolveAllowedHostsTest(unittest.TestCase):
@@ -877,13 +877,13 @@ class ResolveAllowedHostsTest(unittest.TestCase):
 
     def test_環境変数が無ければ既定のホスト集合を使う(self):
         self.assertEqual(
-            aws_credential.resolve_allowed_hosts({}),
-            aws_credential.DEFAULT_ALLOWED_HOSTS,
+            aws_cli_proxy.resolve_allowed_hosts({}),
+            aws_cli_proxy.DEFAULT_ALLOWED_HOSTS,
         )
 
     def test_環境変数のホストを既定のホスト集合に追加する(self):
-        allowed_hosts = aws_credential.resolve_allowed_hosts(
-            {aws_credential.ALLOWED_HOSTS_ENV: "host.docker.internal, example.internal"}
+        allowed_hosts = aws_cli_proxy.resolve_allowed_hosts(
+            {aws_cli_proxy.ALLOWED_HOSTS_ENV: "host.docker.internal, example.internal"}
         )
         self.assertIn("host.docker.internal", allowed_hosts)
         self.assertIn("example.internal", allowed_hosts)
