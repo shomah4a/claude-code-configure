@@ -32,8 +32,7 @@
           {
             "type": "command",
             "command": "cc-stop",
-            "async": true,
-            "timeout": 40
+            "async": true
           }
         ]
       }

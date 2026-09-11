@@ -197,6 +197,13 @@ class ReadHookInputのテスト(unittest.TestCase):
 
         self.assertEqual(cc_stop.read_hook_input(io.StringIO("[1, 2]")), {})
 
+    def test_構文が壊れたJSONはJSONDecodeErrorを送出する(self):
+        import io
+        import json
+
+        with self.assertRaises(json.JSONDecodeError):
+            cc_stop.read_hook_input(io.StringIO("{broken"))
+
 
 if __name__ == "__main__":
     unittest.main()

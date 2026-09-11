@@ -40,8 +40,9 @@ def should_skip(hook_input: Mapping[str, object], env: Mapping[str, str]) -> Opt
     """読み上げをスキップすべき場合はその理由を返し、実行する場合は None を返す"""
     if env.get(RECURSION_GUARD_ENV):
         return "再帰防止: 子プロセスからの起動"
+    # agent_id はサブエージェント内、または --agent 起動時に付与される。いずれも読み上げ対象外とする
     if hook_input.get("agent_id"):
-        return "サブエージェント由来の Stop"
+        return "agent_id 付きの Stop (サブエージェント内または --agent 起動)"
     return None
 
 
