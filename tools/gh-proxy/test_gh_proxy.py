@@ -468,5 +468,177 @@ class GitMergeDefaultBranchSchemaValidationTest(unittest.TestCase):
             )
 
 
+class BuildGitSyncDefaultBranchArgsTest(unittest.TestCase):
+    """git_sync_default_branch の git コマンド引数組み立てのテスト"""
+
+    def test_ローカルブランチのフルrefを組み立てる(self):
+        self.assertEqual(gh_proxy.local_branch_ref("main"), "refs/heads/main")
+
+    def test_origin追跡ブランチのフルrefを組み立てる(self):
+        self.assertEqual(gh_proxy.origin_branch_ref("main"), "refs/remotes/origin/main")
+
+    def test_パスからワークツリー一覧取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_worktree_list_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "worktree", "list", "--porcelain"],
+        )
+
+    def test_パスとgitdir内パスから解決用の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_in_progress_path_args("/home/user/repo", "MERGE_HEAD"),
+            ["-C", "/home/user/repo", "rev-parse", "--git-path", "MERGE_HEAD"],
+        )
+
+    def test_パスからカレントブランチ名取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_current_branch_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "symbolic-ref", "-q", "--short", "HEAD"],
+        )
+
+    def test_パスからHEADのSHA取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_head_sha_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "rev-parse", "HEAD"],
+        )
+
+    def test_パスから追跡対象のみのstatus取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_tracked_status_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "status", "--porcelain", "--untracked-files=no"],
+        )
+
+    def test_パスからorigin限定fetchの引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_fetch_origin_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "fetch", "origin"],
+        )
+
+    def test_refのコミット解決確認の引数リストにコミット指定子を付加する(self):
+        self.assertEqual(
+            gh_proxy.build_git_verify_commit_args("/home/user/repo", "refs/remotes/origin/main"),
+            ["-C", "/home/user/repo", "rev-parse", "-q", "--verify",
+             "refs/remotes/origin/main^{commit}"],
+        )
+
+    def test_祖先関係判定の引数リストを祖先と子孫の順で組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_is_ancestor_args(
+                "/home/user/repo", "refs/heads/main", "refs/remotes/origin/main"
+            ),
+            ["-C", "/home/user/repo", "merge-base", "--is-ancestor",
+             "refs/heads/main", "refs/remotes/origin/main"],
+        )
+
+    def test_ブランチ切り替えはcheckoutではなくswitchを使う(self):
+        self.assertEqual(
+            gh_proxy.build_git_switch_args("/home/user/repo", "main"),
+            ["-C", "/home/user/repo", "switch", "main"],
+        )
+
+    def test_マージの引数リストにff_onlyを付加する(self):
+        self.assertEqual(
+            gh_proxy.build_git_merge_ff_only_args("/home/user/repo", "refs/remotes/origin/main"),
+            ["-C", "/home/user/repo", "merge", "--ff-only", "refs/remotes/origin/main"],
+        )
+
+
+class ParseMainWorktreeTest(unittest.TestCase):
+    """git worktree list --porcelain の出力からメインワークツリーを取り出す処理のテスト"""
+
+    def test_単一ワークツリーのパスを取り出す(self):
+        output = "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/main\n"
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo", False))
+
+    def test_複数ワークツリーがある場合は先頭のエントリを返す(self):
+        output = (
+            "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/main\n"
+            "\n"
+            "worktree /home/user/repo/.claude/worktrees/feature\n"
+            "HEAD def456\nbranch refs/heads/feature\n"
+        )
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo", False))
+
+    def test_先頭がbareリポジトリの場合はbareフラグを返す(self):
+        output = "worktree /home/user/repo.git\nbare\n"
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo.git", True))
+
+    def test_後続エントリのbare属性を先頭エントリのものとして扱わない(self):
+        output = (
+            "worktree /home/user/repo\nHEAD abc123\ndetached\n"
+            "\n"
+            "worktree /home/user/other.git\nbare\n"
+        )
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo", False))
+
+    def test_detachedなメインワークツリーでもパスを取り出す(self):
+        output = "worktree /home/user/repo\nHEAD abc123\ndetached\n"
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo", False))
+
+    def test_空の出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_main_worktree("")
+
+    def test_worktree行で始まらない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_main_worktree("HEAD abc123\nbranch refs/heads/main\n")
+
+    def test_worktree行にパスがない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_main_worktree("worktree \n")
+
+
+class FindWorktreeOccupyingBranchTest(unittest.TestCase):
+    """指定ブランチを他のワークツリーが占有しているかの判定のテスト"""
+
+    MULTI_WORKTREE_OUTPUT = (
+        "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/feature\n"
+        "\n"
+        "worktree /home/user/repo/.claude/worktrees/main-wt\n"
+        "HEAD def456\nbranch refs/heads/main\n"
+    )
+
+    def test_他のワークツリーが占有している場合はそのパスを返す(self):
+        self.assertEqual(
+            gh_proxy.find_worktree_occupying_branch(
+                self.MULTI_WORKTREE_OUTPUT, "main", "/home/user/repo"
+            ),
+            "/home/user/repo/.claude/worktrees/main-wt",
+        )
+
+    def test_除外対象のワークツリー自身が占有していても占有とみなさない(self):
+        self.assertIsNone(
+            gh_proxy.find_worktree_occupying_branch(
+                self.MULTI_WORKTREE_OUTPUT, "feature", "/home/user/repo"
+            )
+        )
+
+    def test_どのワークツリーも占有していない場合はNoneを返す(self):
+        self.assertIsNone(
+            gh_proxy.find_worktree_occupying_branch(
+                self.MULTI_WORKTREE_OUTPUT, "develop", "/home/user/repo"
+            )
+        )
+
+    def test_ブランチ名の前方一致では占有とみなさない(self):
+        output = (
+            "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/feature\n"
+            "\n"
+            "worktree /home/user/wt\nHEAD def456\nbranch refs/heads/main-backup\n"
+        )
+        self.assertIsNone(
+            gh_proxy.find_worktree_occupying_branch(output, "main", "/home/user/repo")
+        )
+
+    def test_detachedなワークツリーは占有とみなさない(self):
+        output = (
+            "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/feature\n"
+            "\n"
+            "worktree /home/user/wt\nHEAD def456\ndetached\n"
+        )
+        self.assertIsNone(
+            gh_proxy.find_worktree_occupying_branch(output, "main", "/home/user/repo")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

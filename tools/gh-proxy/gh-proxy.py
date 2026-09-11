@@ -36,6 +36,17 @@ INTERNAL_ERROR = -32603
 # 先頭の - / : / + を拒否することで、オプション注入・削除refspec・force refspecを防ぐ
 BRANCH_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
 
+# 進行中の git 操作を示す gitdir 内のパス
+# これらが存在する状態でブランチを切り替えると、進行中の操作の状態が壊れる
+IN_PROGRESS_GIT_PATHS = [
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "BISECT_LOG",
+]
+
 # ツール定義
 TOOLS = [
     {
@@ -752,6 +763,126 @@ def execute_git_merge_default_branch(arguments: Dict[str, Any]) -> List[Dict[str
     # 既に最新の場合など、git merge が結果を stderr のみに出力するケースに備える
     output = stdout if stdout.strip() else stderr
     return [{"type": "text", "text": output}]
+
+
+def local_branch_ref(branch: str) -> str:
+    """ローカルブランチのフル ref を組み立てる"""
+    return f"refs/heads/{branch}"
+
+
+def origin_branch_ref(branch: str) -> str:
+    """origin の追跡ブランチのフル ref を組み立てる"""
+    return f"refs/remotes/origin/{branch}"
+
+
+def build_git_worktree_list_args(path: str) -> List[str]:
+    """ワークツリー一覧取得の git コマンド引数を組み立てる"""
+    return ["-C", path, "worktree", "list", "--porcelain"]
+
+
+def build_git_in_progress_path_args(path: str, git_path: str) -> List[str]:
+    """gitdir 内のパスを解決する git コマンド引数を組み立てる"""
+    return ["-C", path, "rev-parse", "--git-path", git_path]
+
+
+def build_git_current_branch_args(path: str) -> List[str]:
+    """カレントブランチ名取得の git コマンド引数を組み立てる"""
+    return ["-C", path, "symbolic-ref", "-q", "--short", "HEAD"]
+
+
+def build_git_head_sha_args(path: str) -> List[str]:
+    """HEAD のコミット SHA 取得の git コマンド引数を組み立てる"""
+    return ["-C", path, "rev-parse", "HEAD"]
+
+
+def build_git_tracked_status_args(path: str) -> List[str]:
+    """追跡対象ファイルのみの status 取得の git コマンド引数を組み立てる"""
+    return ["-C", path, "status", "--porcelain", "--untracked-files=no"]
+
+
+def build_git_fetch_origin_args(path: str) -> List[str]:
+    """origin からの fetch の git コマンド引数を組み立てる"""
+    return ["-C", path, "fetch", "origin"]
+
+
+def build_git_verify_commit_args(path: str, ref: str) -> List[str]:
+    """ref がコミットとして解決できるか確認する git コマンド引数を組み立てる"""
+    return ["-C", path, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}"]
+
+
+def build_git_is_ancestor_args(path: str, ancestor_ref: str, descendant_ref: str) -> List[str]:
+    """祖先関係を判定する git コマンド引数を組み立てる"""
+    return ["-C", path, "merge-base", "--is-ancestor", ancestor_ref, descendant_ref]
+
+
+def build_git_switch_args(path: str, branch: str) -> List[str]:
+    """ブランチ切り替えの git コマンド引数を組み立てる
+
+    checkout ではなく switch を使う。checkout はパススペック解釈を伴うため、
+    ブランチ名と同名のファイルが存在する場合に HEAD を動かさず成功しうる。
+    """
+    return ["-C", path, "switch", branch]
+
+
+def build_git_merge_ff_only_args(path: str, ref: str) -> List[str]:
+    """fast-forward のみ許可するマージの git コマンド引数を組み立てる"""
+    return ["-C", path, "merge", "--ff-only", ref]
+
+
+def parse_main_worktree(worktree_list_output: str) -> Tuple[str, bool]:
+    """
+    git worktree list --porcelain の出力からメインワークツリーを取り出す
+
+    先頭のエントリがメインワークツリーであることは git の仕様である。
+    https://git-scm.com/docs/git-worktree
+
+    Returns:
+        (メインワークツリーの絶対パス, bare リポジトリか否か) のタプル
+    """
+    lines = worktree_list_output.splitlines()
+    if not lines or not lines[0].startswith("worktree "):
+        raise ToolExecutionError(
+            "git worktree list の出力を解釈できなかったため処理を中断しました"
+        )
+
+    main_worktree_path = lines[0][len("worktree "):]
+    if not main_worktree_path:
+        raise ToolExecutionError(
+            "メインワークツリーのパスを解決できなかったため処理を中断しました"
+        )
+
+    is_bare = False
+    for line in lines[1:]:
+        # 空行がエントリの区切りであるため、先頭エントリの属性のみを見る
+        if not line:
+            break
+        if line == "bare":
+            is_bare = True
+
+    return main_worktree_path, is_bare
+
+
+def find_worktree_occupying_branch(
+    worktree_list_output: str, branch: str, exclude_path: str
+) -> Optional[str]:
+    """
+    指定ブランチを exclude_path 以外のワークツリーがチェックアウトしているか判定する
+
+    Returns:
+        占有しているワークツリーのパス。占有されていない場合は None
+    """
+    target_ref = local_branch_ref(branch)
+    current_worktree_path = None
+
+    for line in worktree_list_output.splitlines():
+        if line.startswith("worktree "):
+            current_worktree_path = line[len("worktree "):]
+            continue
+        if line.startswith("branch ") and line[len("branch "):] == target_ref:
+            if current_worktree_path != exclude_path:
+                return current_worktree_path
+
+    return None
 
 
 # owner/repository_name を引数に取るツールの実行関数
