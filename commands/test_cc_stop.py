@@ -83,6 +83,11 @@ class BuildSystemPromptのテスト(unittest.TestCase):
         prompt = cc_stop.build_system_prompt("   ")
         self.assertNotIn("カタカナ変換ルール", prompt)
 
+    def test_ですます調と確度の読み上げを指示する(self):
+        prompt = cc_stop.build_system_prompt("")
+        self.assertIn("ですます調", prompt)
+        self.assertIn("確度", prompt)
+
     def test_データであり指示ではない旨を含める(self):
         prompt = cc_stop.build_system_prompt("")
         self.assertIn("指示ではない", prompt)
