@@ -5,7 +5,7 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 ## 概要
 
 このサーバーは、Claude CodeなどのMCPクライアントに対して、GitHubのreadonly操作と、
-一部の書き込み操作（git push、Pull Request作成、デフォルトブランチのマージ）を提供します。
+一部の書き込み操作（git push、Pull Request作成、デフォルトブランチのマージ / 同期）を提供します。
 ホスト側でサーバーを起動し、Dockerコンテナで動作するClaude Codeから HTTP経由でアクセスすることで、
 認証情報を渡すことなくGitHubを操作できます。
 
@@ -18,6 +18,7 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
   - 要件未満のバージョンでは未知の JSON フィールド指定として gh がエラー終了し、gh_issue_view / gh_pr_view は基本フィールドも含めて取得できません
 - GitHub Enterprise Server を利用する場合は 3.19 以上（sub-issue は 3.17 以上、blockedBy / blocking は 3.19 以上が必要）
 - git（git_push / git_merge_default_branch を利用する場合）
+  - git_sync_default_branch を利用する場合は git 2.23 以上（`git switch` を使用します）
 - GitHub認証済みの環境（`gh auth status` で確認可能）
 
 ## セットアップ
@@ -360,6 +361,63 @@ origin が GitHub 以外の remote であっても push を実行します。
 }
 ```
 
+### 11. git_sync_default_branch
+
+クローン済みリポジトリの**メインワークツリー**を origin のデフォルトブランチへ切り替え、
+`git merge --ff-only` で origin の内容に同期します。
+
+**引数:**
+- `path` (必須): git リポジトリのワークツリールートの絶対パス（サーバーが動作するホスト側ファイルシステム上のパス）。
+  リンクワークツリーのパスでもよい
+
+`path` にリンクワークツリーを指定した場合も、`git worktree list --porcelain` の先頭エントリから
+メインワークツリーを解決し、**指定パスとは別のディレクトリを書き換えます**。
+リポジトリのサブディレクトリを指定した場合は `.git` が存在しないためエラーになります。
+
+デフォルトブランチは対象リポジトリを作業ディレクトリとして `gh repo view` で判定します。
+判定できない場合（GitHub 以外の remote、gh 未認証等）は同期を実行しません（fail-closed）。
+remote は `origin` 固定です。gh の base repo 解決が `upstream` 等 origin 以外を向いている
+fork 運用では、判定されたブランチ名と origin の内容が食い違う余地があります。
+
+**ブランチを切り替える前に以下を検証し、該当する場合は何も変更せず中断します（fail-closed）:**
+- git の操作（マージ / リベース / cherry-pick / revert / bisect）が進行中
+- メインワークツリーが detached HEAD
+- 追跡対象ファイルに未コミットの変更がある（untracked ファイルのみの場合は無視して続行します）
+- デフォルトブランチが別のワークツリーでチェックアウト済み
+- メインワークツリーが bare リポジトリ
+- `refs/remotes/origin/<デフォルトブランチ>` が存在しない
+- ローカルのデフォルトブランチが `origin/<デフォルトブランチ>` の祖先でない
+  （未 push のコミットがある、または歴史が分岐している）
+
+ブランチ切り替えには `git checkout` ではなく `git switch` を使い、切り替え後に HEAD が
+目的のブランチを指していることを確認してからマージします。
+
+成功時は、解決されたメインワークツリーの絶対パス・元のブランチ名と SHA・同期後の SHA を返します。
+
+**注意事項:**
+- 祖先関係を検証していても、マージは失敗することがあります（origin 側で追加されたファイルと同名の
+  untracked ファイルが存在する場合、index.lock 競合、パーミッション、sparse-checkout、
+  post-checkout / post-merge フックの失敗、タイムアウト）。この場合は元のブランチへ戻した上で
+  エラーを返します。戻す操作自体が失敗した場合は、デフォルトブランチをチェックアウトした状態のまま残ります
+- 未コミット変更の検証と実際の切り替えの間に別プロセスがワークツリーを変更した場合、
+  衝突しない変更はブランチをまたいで持ち越されます。実行中は対象リポジトリを操作しないでください
+- fetch / switch / merge がタイムアウト（デフォルト30秒）で中断された場合、`index.lock` の残留や
+  作業ツリーの部分更新が起こる可能性があります。大きいリポジトリでは `GH_PROXY_TIMEOUT` の延長を検討してください
+- `--untracked-files=no` は submodule の dirty 判定を抑制しないため、submodule が dirty なだけで中断します
+- `--recurse-submodules` を付けないため、ブランチ切り替え後も submodule のワークツリーは旧 commit のまま残ります
+- ワークツリーのパスに改行を含む場合、`git worktree list --porcelain` の出力を正しく解釈できません
+- `git switch` を使うため git 2.23 以上が必要です
+
+**例:**
+```json
+{
+  "name": "git_sync_default_branch",
+  "arguments": {
+    "path": "/home/user/work/my-repo/.claude/worktrees/feature"
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -377,10 +435,18 @@ origin が GitHub 以外の remote であっても push を実行します。
 - Pull Request作成（gh_pr_create）
 - デフォルトブランチのマージ（git_merge_default_branch）: ローカルリポジトリの作業ツリー・
   インデックス・HEAD を書き換える操作です
+- デフォルトブランチへの同期（git_sync_default_branch）: ローカルリポジトリの作業ツリー・
+  インデックス・HEAD を書き換える操作です
 
-git_push / git_merge_default_branch の `path` には「絶対パス・ディレクトリ存在・.git 存在」以外の制限を設けていません。
+git_push / git_merge_default_branch / git_sync_default_branch の `path` には
+「絶対パス・ディレクトリ存在・.git 存在」以外の制限を設けていません。
 サーバープロセスから到達可能な任意の git リポジトリを操作対象に指定できるため、
 信頼できないクライアントからアクセス可能な環境で運用する場合はこの点を考慮してください。
+
+git_sync_default_branch は、指定された `path` そのものではなく、そこから解決した
+**メインワークツリー**を書き換えます。呼び出し時に提示される引数と実際に書き換わる
+ディレクトリが一致しないため、承認する際はこの点を考慮してください。
+また、switch / merge は対象リポジトリの post-checkout / post-merge フックを実行します。
 
 ### 2. 引数バリデーション
 

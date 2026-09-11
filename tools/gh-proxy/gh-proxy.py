@@ -23,7 +23,7 @@ PORT = int(os.environ.get('GH_PROXY_PORT', '30721'))
 TIMEOUT = int(os.environ.get('GH_PROXY_TIMEOUT', '30'))
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.4.0"
+SERVER_VERSION = "1.5.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
@@ -35,6 +35,17 @@ INTERNAL_ERROR = -32603
 # ブランチ名の許可パターン
 # 先頭の - / : / + を拒否することで、オプション注入・削除refspec・force refspecを防ぐ
 BRANCH_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+
+# 進行中の git 操作を示す gitdir 内のパス
+# これらが存在する状態でブランチを切り替えると、進行中の操作の状態が壊れる
+IN_PROGRESS_GIT_PATHS = [
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "BISECT_LOG",
+]
 
 # ツール定義
 TOOLS = [
@@ -284,6 +295,29 @@ TOOLS = [
                 }
             },
             "required": ["path", "branch"]
+        }
+    },
+    {
+        "name": "git_sync_default_branch",
+        "description": (
+            "クローン済みリポジトリのメインワークツリーを origin のデフォルトブランチへ切り替え、"
+            "fast-forward で origin の内容に同期します。"
+            "path にリンクワークツリーを指定した場合も、書き換わるのは解決されたメインワークツリーです。"
+            "未コミットの変更 (追跡対象) がある場合、ローカルの歴史が origin と食い違っている場合、"
+            "git の操作が進行中の場合は何も変更せず中断します"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "クローン済みリポジトリのワークツリールートの絶対パス。"
+                        "リンクワークツリーのパスでもよい (メインワークツリーを解決して操作します)"
+                    )
+                }
+            },
+            "required": ["path"]
         }
     },
     {
@@ -754,6 +788,445 @@ def execute_git_merge_default_branch(arguments: Dict[str, Any]) -> List[Dict[str
     return [{"type": "text", "text": output}]
 
 
+def local_branch_ref(branch: str) -> str:
+    """ローカルブランチのフル ref を組み立てる"""
+    return f"refs/heads/{branch}"
+
+
+def origin_branch_ref(branch: str) -> str:
+    """origin の追跡ブランチのフル ref を組み立てる"""
+    return f"refs/remotes/origin/{branch}"
+
+
+def build_git_worktree_list_args(path: str) -> List[str]:
+    """ワークツリー一覧取得の git コマンド引数を組み立てる"""
+    return ["-C", path, "worktree", "list", "--porcelain"]
+
+
+def build_git_in_progress_path_args(path: str, git_path: str) -> List[str]:
+    """gitdir 内のパスを解決する git コマンド引数を組み立てる"""
+    return ["-C", path, "rev-parse", "--git-path", git_path]
+
+
+def build_git_current_branch_args(path: str) -> List[str]:
+    """カレントブランチ名取得の git コマンド引数を組み立てる"""
+    return ["-C", path, "symbolic-ref", "-q", "--short", "HEAD"]
+
+
+def build_git_head_sha_args(path: str) -> List[str]:
+    """HEAD のコミット SHA 取得の git コマンド引数を組み立てる"""
+    return ["-C", path, "rev-parse", "HEAD"]
+
+
+def build_git_tracked_status_args(path: str) -> List[str]:
+    """追跡対象ファイルのみの status 取得の git コマンド引数を組み立てる"""
+    return ["-C", path, "status", "--porcelain", "--untracked-files=no"]
+
+
+def build_git_fetch_origin_args(path: str) -> List[str]:
+    """origin からの fetch の git コマンド引数を組み立てる"""
+    return ["-C", path, "fetch", "origin"]
+
+
+def build_git_verify_commit_args(path: str, ref: str) -> List[str]:
+    """ref がコミットとして解決できるか確認する git コマンド引数を組み立てる"""
+    return ["-C", path, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}"]
+
+
+def build_git_is_ancestor_args(path: str, ancestor_ref: str, descendant_ref: str) -> List[str]:
+    """祖先関係を判定する git コマンド引数を組み立てる"""
+    return ["-C", path, "merge-base", "--is-ancestor", ancestor_ref, descendant_ref]
+
+
+def build_git_switch_args(path: str, branch: str) -> List[str]:
+    """ブランチ切り替えの git コマンド引数を組み立てる
+
+    checkout ではなく switch を使う。checkout はパススペック解釈を伴うため、
+    ブランチ名と同名のファイルが存在する場合に HEAD を動かさず成功しうる。
+    """
+    return ["-C", path, "switch", branch]
+
+
+def build_git_merge_ff_only_args(path: str, ref: str) -> List[str]:
+    """fast-forward のみ許可するマージの git コマンド引数を組み立てる"""
+    return ["-C", path, "merge", "--ff-only", ref]
+
+
+def parse_main_worktree(worktree_list_output: str) -> Tuple[str, bool]:
+    """
+    git worktree list --porcelain の出力からメインワークツリーを取り出す
+
+    先頭のエントリがメインワークツリーであることは git の仕様である。
+    https://git-scm.com/docs/git-worktree
+
+    Returns:
+        (メインワークツリーの絶対パス, bare リポジトリか否か) のタプル
+    """
+    lines = worktree_list_output.splitlines()
+    if not lines or not lines[0].startswith("worktree "):
+        raise ToolExecutionError(
+            "git worktree list の出力を解釈できなかったため処理を中断しました"
+        )
+
+    main_worktree_path = lines[0][len("worktree "):]
+    if not main_worktree_path:
+        raise ToolExecutionError(
+            "メインワークツリーのパスを解決できなかったため処理を中断しました"
+        )
+
+    is_bare = False
+    for line in lines[1:]:
+        # 空行がエントリの区切りであるため、先頭エントリの属性のみを見る
+        if not line:
+            break
+        if line == "bare":
+            is_bare = True
+
+    return main_worktree_path, is_bare
+
+
+def find_worktree_occupying_branch(
+    worktree_list_output: str, branch: str, exclude_path: str
+) -> Optional[str]:
+    """
+    指定ブランチを exclude_path 以外のワークツリーがチェックアウトしているか判定する
+
+    Returns:
+        占有しているワークツリーのパス。占有されていない場合は None
+    """
+    target_ref = local_branch_ref(branch)
+    current_worktree_path = None
+
+    for line in worktree_list_output.splitlines():
+        if line.startswith("worktree "):
+            current_worktree_path = line[len("worktree "):]
+            continue
+        if line.startswith("branch ") and line[len("branch "):] == target_ref:
+            if current_worktree_path != exclude_path:
+                return current_worktree_path
+
+    return None
+
+
+def resolve_main_worktree(path: str) -> Tuple[str, str]:
+    """
+    path が属するリポジトリのメインワークツリーを解決する
+
+    Returns:
+        (メインワークツリーの絶対パス, worktree list --porcelain の出力) のタプル
+    """
+    stdout, stderr, code = execute_git_command(build_git_worktree_list_args(path))
+
+    if code != 0:
+        raise ToolExecutionError(
+            f"ワークツリー一覧の取得に失敗したため処理を中断しました: {stderr}"
+        )
+
+    main_worktree_path, is_bare = parse_main_worktree(stdout)
+    if is_bare:
+        raise ToolExecutionError(
+            f"メインワークツリーが bare リポジトリのため同期できません: {main_worktree_path}"
+        )
+
+    return main_worktree_path, stdout
+
+
+def find_in_progress_git_operation(path: str) -> Optional[str]:
+    """
+    進行中の git 操作があれば、それを示す gitdir 内のパス名を返す
+
+    git のエラーメッセージはロケールにより翻訳されるため、
+    文字列一致ではなく gitdir 内のファイル・ディレクトリの有無で判定する。
+    """
+    for git_path in IN_PROGRESS_GIT_PATHS:
+        stdout, stderr, code = execute_git_command(
+            build_git_in_progress_path_args(path, git_path))
+
+        if code != 0:
+            raise ToolExecutionError(
+                f"{git_path} のパス解決に失敗したため処理を中断しました: {stderr}"
+            )
+
+        resolved_path = stdout.strip()
+        if not resolved_path:
+            raise ToolExecutionError(
+                f"{git_path} のパスを解決できなかったため処理を中断しました"
+            )
+
+        # git は -C で指定したディレクトリを起点とする相対パスを返すことがある
+        if not os.path.isabs(resolved_path):
+            resolved_path = os.path.join(path, resolved_path)
+
+        if os.path.exists(resolved_path):
+            return git_path
+
+    return None
+
+
+def ensure_no_git_operation_in_progress(path: str) -> None:
+    """
+    マージ・リベース等の git 操作が進行中でないことを検証する
+
+    進行中の操作がある状態でブランチを切り替えると操作の状態が壊れるため、
+    fail-closed で中断する。
+    """
+    in_progress_operation = find_in_progress_git_operation(path)
+
+    if in_progress_operation:
+        raise ToolExecutionError(
+            f"リポジトリで git の操作が進行中 ({in_progress_operation}) のため実行を中断しました。"
+            f"操作を完了するか中止してください: {path}"
+        )
+
+
+def resolve_current_branch(path: str) -> str:
+    """
+    HEAD が指すブランチ名を取得する
+
+    detached HEAD の場合はブランチに載っていないコミットを見失う恐れがあるため、
+    例外を送出して中断する (fail-closed)。
+    """
+    stdout, stderr, code = execute_git_command(build_git_current_branch_args(path))
+
+    if code != 0:
+        raise ToolExecutionError(
+            f"ワークツリーが detached HEAD 状態のため実行を中断しました: {path}"
+        )
+
+    branch = stdout.strip()
+    if not branch:
+        raise ToolExecutionError(
+            f"カレントブランチ名を解決できなかったため処理を中断しました: {path}"
+        )
+
+    return branch
+
+
+def resolve_head_sha(path: str) -> str:
+    """HEAD のコミット SHA を取得する"""
+    stdout, stderr, code = execute_git_command(build_git_head_sha_args(path))
+
+    if code != 0:
+        raise ToolExecutionError(
+            f"HEAD のコミット SHA の取得に失敗したため処理を中断しました: {stderr}"
+        )
+
+    return stdout.strip()
+
+
+def ensure_no_tracked_changes(path: str) -> None:
+    """
+    追跡対象ファイルに未コミットの変更がないことを検証する
+
+    untracked ファイルはブランチ切り替えに影響しないため無視する。
+    """
+    stdout, stderr, code = execute_git_command(build_git_tracked_status_args(path))
+
+    if code != 0:
+        raise ToolExecutionError(
+            f"作業ツリーの状態取得に失敗したため処理を中断しました: {stderr}"
+        )
+
+    if stdout.strip():
+        raise ToolExecutionError(
+            f"ワークツリーに未コミットの変更があるため実行を中断しました: {path}\n{stdout}"
+        )
+
+
+def ensure_branch_not_occupied(worktree_list_output: str, branch: str, root: str) -> None:
+    """デフォルトブランチが他のワークツリーでチェックアウトされていないことを検証する"""
+    occupying_worktree = find_worktree_occupying_branch(worktree_list_output, branch, root)
+
+    if occupying_worktree:
+        raise ToolExecutionError(
+            f"{branch} は別のワークツリーでチェックアウトされているため実行を中断しました: "
+            f"{occupying_worktree}"
+        )
+
+
+def fetch_origin(path: str) -> None:
+    """origin から fetch する"""
+    stdout, stderr, code = execute_git_command(build_git_fetch_origin_args(path))
+
+    if code != 0:
+        raise ToolExecutionError(f"git fetch failed: {stderr}")
+
+
+def ref_exists(path: str, ref: str) -> bool:
+    """ref がコミットとして解決できるかを判定する"""
+    stdout, stderr, code = execute_git_command(build_git_verify_commit_args(path, ref))
+    return code == 0
+
+
+def ensure_origin_branch_exists(path: str, branch: str) -> None:
+    """origin の追跡ブランチが存在することを検証する"""
+    if not ref_exists(path, origin_branch_ref(branch)):
+        raise ToolExecutionError(
+            f"origin の追跡ブランチが存在しないため実行を中断しました: {origin_branch_ref(branch)}"
+        )
+
+
+def ensure_local_branch_is_ancestor(path: str, branch: str) -> None:
+    """
+    ローカルブランチが origin の追跡ブランチの祖先であることを検証する
+
+    未 push のコミットがある場合や歴史が分岐している場合を、HEAD を動かす前に検出する。
+    ローカルブランチが存在しない場合は切り替え時に origin から作られるため検証不要。
+    """
+    if not ref_exists(path, local_branch_ref(branch)):
+        return
+
+    stdout, stderr, code = execute_git_command(
+        build_git_is_ancestor_args(path, local_branch_ref(branch), origin_branch_ref(branch)))
+
+    if code == 0:
+        return
+
+    # merge-base --is-ancestor は終了コード 1 を「祖先でない」、2 以上をエラーとして返す
+    if code == 1:
+        raise ToolExecutionError(
+            f"ローカルの {branch} が origin/{branch} の祖先ではないため実行を中断しました。"
+            f"未 push のコミットがあるか、歴史が分岐しています"
+        )
+
+    raise ToolExecutionError(
+        f"祖先関係の判定に失敗したため実行を中断しました: {stderr}"
+    )
+
+
+def switch_to_branch(path: str, branch: str) -> None:
+    """ブランチを切り替える"""
+    stdout, stderr, code = execute_git_command(build_git_switch_args(path, branch))
+
+    if code != 0:
+        raise ToolExecutionError(f"git switch failed: {stdout}{stderr}")
+
+
+def ensure_head_branch(path: str, branch: str) -> None:
+    """HEAD が目的のブランチを指していることを検証する"""
+    current_branch = resolve_current_branch(path)
+
+    if current_branch != branch:
+        raise ToolExecutionError(
+            f"ブランチ切り替え後の HEAD が {branch} ではなく {current_branch} を指しているため、"
+            f"マージせず中断しました"
+        )
+
+
+def restore_original_branch(path: str, original_branch: str) -> Optional[str]:
+    """
+    元のブランチへ戻す
+
+    Returns:
+        戻せなかった場合は git の出力。戻せた場合は None
+    """
+    stdout, stderr, code = execute_git_command(build_git_switch_args(path, original_branch))
+
+    if code != 0:
+        return f"{stdout}{stderr}"
+
+    return None
+
+
+def merge_origin_branch_fast_forward(path: str, branch: str, original_branch: str) -> str:
+    """
+    origin の追跡ブランチを fast-forward でマージする
+
+    失敗した場合は元のブランチへ戻した上でエラーを送出する。
+    祖先関係を検証済みでも、untracked ファイルとの衝突やフックの失敗により
+    マージは失敗しうる。
+    """
+    stdout, stderr, code = execute_git_command(
+        build_git_merge_ff_only_args(path, origin_branch_ref(branch)))
+
+    if code == 0:
+        # 既に最新の場合など、git merge が結果を stderr のみに出力するケースに備える
+        return stdout if stdout.strip() else stderr
+
+    merge_error = f"{stdout}{stderr}"
+    restore_error = restore_original_branch(path, original_branch)
+
+    if restore_error:
+        raise ToolExecutionError(
+            f"git merge --ff-only failed: {merge_error}"
+            f"元ブランチ {original_branch} への復帰にも失敗したため、"
+            f"{branch} をチェックアウトした状態のまま残っています: {restore_error}"
+        )
+
+    raise ToolExecutionError(
+        f"git merge --ff-only failed: {merge_error}"
+        f"元ブランチ {original_branch} へ復帰しました"
+    )
+
+
+def format_sync_result(root: str, original_branch: str, original_sha: str,
+                       default_branch: str, synced_sha: str, merge_output: str) -> str:
+    """同期結果のテキストを組み立てる"""
+    return (
+        f"ルートワークツリー: {root}\n"
+        f"元ブランチ: {original_branch} ({original_sha})\n"
+        f"同期したブランチ: {default_branch} ({synced_sha})\n"
+        f"{merge_output}"
+    )
+
+
+def sync_root_worktree_to_default_branch(root: str, worktree_list_output: str,
+                                         resolve_default_branch) -> str:
+    """
+    ルートワークツリーを origin のデフォルトブランチへ同期する
+
+    Args:
+        root: メインワークツリーの絶対パス
+        worktree_list_output: git worktree list --porcelain の出力
+        resolve_default_branch: パスを受け取りデフォルトブランチ名を返す関数
+
+    デフォルトブランチの解決は gh の呼び出しを伴う副作用であるため、外部から注入する。
+
+    ブランチを切り替える前にすべての検証を終えるため、検証段階で中断した場合は
+    リポジトリの HEAD・インデックス・作業ツリーは変化しない。
+    """
+    ensure_no_git_operation_in_progress(root)
+    original_branch = resolve_current_branch(root)
+    original_sha = resolve_head_sha(root)
+    ensure_no_tracked_changes(root)
+
+    default_branch = resolve_default_branch(root)
+    validate_branch_name(default_branch, "default_branch")
+    ensure_branch_not_occupied(worktree_list_output, default_branch, root)
+
+    fetch_origin(root)
+    ensure_origin_branch_exists(root, default_branch)
+    ensure_local_branch_is_ancestor(root, default_branch)
+
+    switch_to_branch(root, default_branch)
+    ensure_head_branch(root, default_branch)
+    merge_output = merge_origin_branch_fast_forward(root, default_branch, original_branch)
+
+    return format_sync_result(
+        root,
+        original_branch,
+        original_sha,
+        default_branch,
+        resolve_head_sha(root),
+        merge_output
+    )
+
+
+def execute_git_sync_default_branch(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """git_sync_default_branch ツールの実行"""
+    path = arguments["path"]
+
+    validate_repository_path(path)
+    root, worktree_list_output = resolve_main_worktree(path)
+
+    output = sync_root_worktree_to_default_branch(
+        root,
+        worktree_list_output,
+        resolve_local_repo_default_branch
+    )
+    return [{"type": "text", "text": output}]
+
+
 # owner/repository_name を引数に取るツールの実行関数
 # 実行関数は (repo, arguments) を受け取る
 REPO_TOOL_EXECUTORS = {
@@ -784,6 +1257,9 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, An
 
     if tool_name == "git_merge_default_branch":
         return execute_git_merge_default_branch(arguments)
+
+    if tool_name == "git_sync_default_branch":
+        return execute_git_sync_default_branch(arguments)
 
     executor = REPO_TOOL_EXECUTORS.get(tool_name)
     if executor is None:

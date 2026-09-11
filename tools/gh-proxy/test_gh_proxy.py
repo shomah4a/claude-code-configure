@@ -468,5 +468,475 @@ class GitMergeDefaultBranchSchemaValidationTest(unittest.TestCase):
             )
 
 
+class BuildGitSyncDefaultBranchArgsTest(unittest.TestCase):
+    """git_sync_default_branch の git コマンド引数組み立てのテスト"""
+
+    def test_ローカルブランチのフルrefを組み立てる(self):
+        self.assertEqual(gh_proxy.local_branch_ref("main"), "refs/heads/main")
+
+    def test_origin追跡ブランチのフルrefを組み立てる(self):
+        self.assertEqual(gh_proxy.origin_branch_ref("main"), "refs/remotes/origin/main")
+
+    def test_パスからワークツリー一覧取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_worktree_list_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "worktree", "list", "--porcelain"],
+        )
+
+    def test_パスとgitdir内パスから解決用の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_in_progress_path_args("/home/user/repo", "MERGE_HEAD"),
+            ["-C", "/home/user/repo", "rev-parse", "--git-path", "MERGE_HEAD"],
+        )
+
+    def test_パスからカレントブランチ名取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_current_branch_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "symbolic-ref", "-q", "--short", "HEAD"],
+        )
+
+    def test_パスからHEADのSHA取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_head_sha_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "rev-parse", "HEAD"],
+        )
+
+    def test_パスから追跡対象のみのstatus取得の引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_tracked_status_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "status", "--porcelain", "--untracked-files=no"],
+        )
+
+    def test_パスからorigin限定fetchの引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_fetch_origin_args("/home/user/repo"),
+            ["-C", "/home/user/repo", "fetch", "origin"],
+        )
+
+    def test_refのコミット解決確認の引数リストにコミット指定子を付加する(self):
+        self.assertEqual(
+            gh_proxy.build_git_verify_commit_args("/home/user/repo", "refs/remotes/origin/main"),
+            ["-C", "/home/user/repo", "rev-parse", "-q", "--verify",
+             "refs/remotes/origin/main^{commit}"],
+        )
+
+    def test_祖先関係判定の引数リストを祖先と子孫の順で組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_git_is_ancestor_args(
+                "/home/user/repo", "refs/heads/main", "refs/remotes/origin/main"
+            ),
+            ["-C", "/home/user/repo", "merge-base", "--is-ancestor",
+             "refs/heads/main", "refs/remotes/origin/main"],
+        )
+
+    def test_ブランチ切り替えはcheckoutではなくswitchを使う(self):
+        self.assertEqual(
+            gh_proxy.build_git_switch_args("/home/user/repo", "main"),
+            ["-C", "/home/user/repo", "switch", "main"],
+        )
+
+    def test_マージの引数リストにff_onlyを付加する(self):
+        self.assertEqual(
+            gh_proxy.build_git_merge_ff_only_args("/home/user/repo", "refs/remotes/origin/main"),
+            ["-C", "/home/user/repo", "merge", "--ff-only", "refs/remotes/origin/main"],
+        )
+
+
+class ParseMainWorktreeTest(unittest.TestCase):
+    """git worktree list --porcelain の出力からメインワークツリーを取り出す処理のテスト"""
+
+    def test_単一ワークツリーのパスを取り出す(self):
+        output = "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/main\n"
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo", False))
+
+    def test_複数ワークツリーがある場合は先頭のエントリを返す(self):
+        output = (
+            "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/main\n"
+            "\n"
+            "worktree /home/user/repo/.claude/worktrees/feature\n"
+            "HEAD def456\nbranch refs/heads/feature\n"
+        )
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo", False))
+
+    def test_先頭がbareリポジトリの場合はbareフラグを返す(self):
+        output = "worktree /home/user/repo.git\nbare\n"
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo.git", True))
+
+    def test_後続エントリのbare属性を先頭エントリのものとして扱わない(self):
+        output = (
+            "worktree /home/user/repo\nHEAD abc123\ndetached\n"
+            "\n"
+            "worktree /home/user/other.git\nbare\n"
+        )
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo", False))
+
+    def test_detachedなメインワークツリーでもパスを取り出す(self):
+        output = "worktree /home/user/repo\nHEAD abc123\ndetached\n"
+        self.assertEqual(gh_proxy.parse_main_worktree(output), ("/home/user/repo", False))
+
+    def test_空の出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_main_worktree("")
+
+    def test_worktree行で始まらない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_main_worktree("HEAD abc123\nbranch refs/heads/main\n")
+
+    def test_worktree行にパスがない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_main_worktree("worktree \n")
+
+
+class FindWorktreeOccupyingBranchTest(unittest.TestCase):
+    """指定ブランチを他のワークツリーが占有しているかの判定のテスト"""
+
+    MULTI_WORKTREE_OUTPUT = (
+        "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/feature\n"
+        "\n"
+        "worktree /home/user/repo/.claude/worktrees/main-wt\n"
+        "HEAD def456\nbranch refs/heads/main\n"
+    )
+
+    def test_他のワークツリーが占有している場合はそのパスを返す(self):
+        self.assertEqual(
+            gh_proxy.find_worktree_occupying_branch(
+                self.MULTI_WORKTREE_OUTPUT, "main", "/home/user/repo"
+            ),
+            "/home/user/repo/.claude/worktrees/main-wt",
+        )
+
+    def test_除外対象のワークツリー自身が占有していても占有とみなさない(self):
+        self.assertIsNone(
+            gh_proxy.find_worktree_occupying_branch(
+                self.MULTI_WORKTREE_OUTPUT, "feature", "/home/user/repo"
+            )
+        )
+
+    def test_どのワークツリーも占有していない場合はNoneを返す(self):
+        self.assertIsNone(
+            gh_proxy.find_worktree_occupying_branch(
+                self.MULTI_WORKTREE_OUTPUT, "develop", "/home/user/repo"
+            )
+        )
+
+    def test_ブランチ名の前方一致では占有とみなさない(self):
+        output = (
+            "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/feature\n"
+            "\n"
+            "worktree /home/user/wt\nHEAD def456\nbranch refs/heads/main-backup\n"
+        )
+        self.assertIsNone(
+            gh_proxy.find_worktree_occupying_branch(output, "main", "/home/user/repo")
+        )
+
+    def test_detachedなワークツリーは占有とみなさない(self):
+        output = (
+            "worktree /home/user/repo\nHEAD abc123\nbranch refs/heads/feature\n"
+            "\n"
+            "worktree /home/user/wt\nHEAD def456\ndetached\n"
+        )
+        self.assertIsNone(
+            gh_proxy.find_worktree_occupying_branch(output, "main", "/home/user/repo")
+        )
+
+
+class GitSyncDefaultBranchSchemaValidationTest(unittest.TestCase):
+    """git_sync_default_branch のスキーマ検証のテスト"""
+
+    def test_pathがあれば例外にならない(self):
+        gh_proxy.validate_arguments("git_sync_default_branch", {"path": "/home/user/repo"})
+
+    def test_pathが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("git_sync_default_branch", {})
+
+    def test_branchフィールドを渡すとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "git_sync_default_branch",
+                {"path": "/home/user/repo", "branch": "main"},
+            )
+
+    def test_相対パスを渡すとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.execute_tool("git_sync_default_branch", {"path": "relative/path"})
+
+    def test_リポジトリのサブディレクトリを渡すとValidationErrorになる(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            sub_dir = os.path.join(repo_dir, "sub")
+            os.makedirs(sub_dir)
+            stdout, stderr, code = gh_proxy.execute_git_command(
+                ["-C", repo_dir, "init", "-q", "-b", "main"])
+            self.assertEqual(code, 0, stderr)
+            with self.assertRaises(gh_proxy.ValidationError):
+                gh_proxy.execute_tool("git_sync_default_branch", {"path": sub_dir})
+
+
+class GitSyncDefaultBranchTest(unittest.TestCase):
+    """実 git リポジトリでのルートワークツリー同期のテスト"""
+
+    DEFAULT_BRANCH = "main"
+
+    def _run_git(self, *args):
+        stdout, stderr, code = gh_proxy.execute_git_command(list(args))
+        self.assertEqual(code, 0, stderr)
+        return stdout.strip()
+
+    def _write_file(self, repo_dir, name, content):
+        with open(os.path.join(repo_dir, name), "w") as f:
+            f.write(content)
+
+    def _configure_identity(self, repo_dir):
+        self._run_git("-C", repo_dir, "config", "user.email", "test@example.com")
+        self._run_git("-C", repo_dir, "config", "user.name", "test")
+
+    def _create_origin_and_clone(self, base_dir):
+        """main をデフォルトブランチとする bare origin と、更新用 clone・対象 clone を作る"""
+        origin_dir = os.path.join(base_dir, "origin.git")
+        seed_dir = os.path.join(base_dir, "seed")
+        clone_dir = os.path.join(base_dir, "clone")
+
+        self._run_git("init", "-q", "--bare", "-b", "main", origin_dir)
+        self._run_git("clone", "-q", origin_dir, seed_dir)
+        self._configure_identity(seed_dir)
+        self._write_file(seed_dir, "data.txt", "base\n")
+        self._run_git("-C", seed_dir, "add", "data.txt")
+        self._run_git("-C", seed_dir, "commit", "-q", "-m", "base")
+        self._run_git("-C", seed_dir, "push", "-q", "origin", "main")
+
+        self._run_git("clone", "-q", origin_dir, clone_dir)
+        self._configure_identity(clone_dir)
+        return origin_dir, seed_dir, clone_dir
+
+    def _advance_origin(self, seed_dir, name="data.txt", content="advanced\n"):
+        """origin のデフォルトブランチを1コミット進める"""
+        self._write_file(seed_dir, name, content)
+        self._run_git("-C", seed_dir, "add", name)
+        self._run_git("-C", seed_dir, "commit", "-q", "-m", f"advance {name}")
+        self._run_git("-C", seed_dir, "push", "-q", "origin", "main")
+
+    def _head_sha(self, repo_dir):
+        return self._run_git("-C", repo_dir, "rev-parse", "HEAD")
+
+    def _current_branch(self, repo_dir):
+        return self._run_git("-C", repo_dir, "symbolic-ref", "-q", "--short", "HEAD")
+
+    def _sync(self, path, default_branch=DEFAULT_BRANCH):
+        root, worktree_list_output = gh_proxy.resolve_main_worktree(path)
+        return gh_proxy.sync_root_worktree_to_default_branch(
+            root, worktree_list_output, lambda _path: default_branch)
+
+    def test_遅れているデフォルトブランチがoriginのコミットへfast_forwardされる(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._advance_origin(seed_dir)
+
+            self._sync(clone_dir)
+
+            self.assertEqual(self._current_branch(clone_dir), "main")
+            self.assertEqual(
+                self._head_sha(clone_dir),
+                self._run_git("-C", origin_dir, "rev-parse", "main"),
+            )
+
+    def test_別ブランチにいる場合はデフォルトブランチへ切り替えて同期する(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._run_git("-C", clone_dir, "switch", "-q", "-c", "feature")
+            self._advance_origin(seed_dir)
+
+            output = self._sync(clone_dir)
+
+            self.assertEqual(self._current_branch(clone_dir), "main")
+            self.assertEqual(
+                self._head_sha(clone_dir),
+                self._run_git("-C", origin_dir, "rev-parse", "main"),
+            )
+            self.assertIn("feature", output)
+            self.assertIn(clone_dir, output)
+
+    def test_untrackedファイルのみの場合は同期しファイルを残す(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._write_file(clone_dir, "scratch.txt", "untracked\n")
+            self._advance_origin(seed_dir)
+
+            self._sync(clone_dir)
+
+            self.assertEqual(
+                self._head_sha(clone_dir),
+                self._run_git("-C", origin_dir, "rev-parse", "main"),
+            )
+            self.assertTrue(os.path.exists(os.path.join(clone_dir, "scratch.txt")))
+
+    def test_ローカルにデフォルトブランチがない場合はoriginから作成して同期する(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._run_git("-C", clone_dir, "switch", "-q", "-c", "feature")
+            self._run_git("-C", clone_dir, "branch", "-q", "-D", "main")
+            self._advance_origin(seed_dir)
+
+            self._sync(clone_dir)
+
+            self.assertEqual(self._current_branch(clone_dir), "main")
+            self.assertEqual(
+                self._head_sha(clone_dir),
+                self._run_git("-C", origin_dir, "rev-parse", "main"),
+            )
+
+    def test_追跡対象に未コミット変更があると中断しHEADが変化しない(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._run_git("-C", clone_dir, "switch", "-q", "-c", "feature")
+            self._advance_origin(seed_dir)
+            self._write_file(clone_dir, "data.txt", "modified\n")
+            before_sha = self._head_sha(clone_dir)
+
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                self._sync(clone_dir)
+
+            self.assertEqual(self._current_branch(clone_dir), "feature")
+            self.assertEqual(self._head_sha(clone_dir), before_sha)
+
+    def test_ステージされた変更があると中断しHEADが変化しない(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._advance_origin(seed_dir)
+            self._write_file(clone_dir, "staged.txt", "staged\n")
+            self._run_git("-C", clone_dir, "add", "staged.txt")
+            before_sha = self._head_sha(clone_dir)
+
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                self._sync(clone_dir)
+
+            self.assertEqual(self._head_sha(clone_dir), before_sha)
+
+    def test_ローカルが先行している場合は中断しHEADが変化しない(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._write_file(clone_dir, "local.txt", "local\n")
+            self._run_git("-C", clone_dir, "add", "local.txt")
+            self._run_git("-C", clone_dir, "commit", "-q", "-m", "local only")
+            before_sha = self._head_sha(clone_dir)
+
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                self._sync(clone_dir)
+
+            self.assertEqual(self._head_sha(clone_dir), before_sha)
+
+    def test_歴史が分岐している場合は中断しHEADが変化しない(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._write_file(clone_dir, "local.txt", "local\n")
+            self._run_git("-C", clone_dir, "add", "local.txt")
+            self._run_git("-C", clone_dir, "commit", "-q", "-m", "local only")
+            self._advance_origin(seed_dir)
+            before_sha = self._head_sha(clone_dir)
+
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                self._sync(clone_dir)
+
+            self.assertEqual(self._head_sha(clone_dir), before_sha)
+
+    def test_originに該当ブランチがない場合は中断しHEADが変化しない(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            before_sha = self._head_sha(clone_dir)
+
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                self._sync(clone_dir, default_branch="absent")
+
+            self.assertEqual(self._current_branch(clone_dir), "main")
+            self.assertEqual(self._head_sha(clone_dir), before_sha)
+
+    def test_detached_HEADの場合は中断しHEADが変化しない(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._run_git("-C", clone_dir, "switch", "-q", "--detach")
+            self._advance_origin(seed_dir)
+            before_sha = self._head_sha(clone_dir)
+
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                self._sync(clone_dir)
+
+            self.assertEqual(self._head_sha(clone_dir), before_sha)
+
+    def test_リベースが進行中の場合は中断しHEADが変化しない(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._run_git("-C", clone_dir, "switch", "-q", "-c", "topic")
+            self._write_file(clone_dir, "data.txt", "topic\n")
+            self._run_git("-C", clone_dir, "commit", "-q", "-am", "topic")
+            self._run_git("-C", clone_dir, "switch", "-q", "main")
+            self._write_file(clone_dir, "data.txt", "main\n")
+            self._run_git("-C", clone_dir, "commit", "-q", "-am", "main")
+            self._run_git("-C", clone_dir, "switch", "-q", "topic")
+            stdout, stderr, code = gh_proxy.execute_git_command(
+                ["-C", clone_dir, "rebase", "main"])
+            self.assertNotEqual(code, 0)
+            before_sha = self._head_sha(clone_dir)
+
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                self._sync(clone_dir)
+
+            self.assertEqual(self._head_sha(clone_dir), before_sha)
+
+    def test_デフォルトブランチが別ワークツリーに占有されている場合は中断する(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._run_git("-C", clone_dir, "switch", "-q", "-c", "feature")
+            linked_worktree_dir = os.path.join(base_dir, "linked")
+            self._run_git("-C", clone_dir, "worktree", "add", "-q", linked_worktree_dir, "main")
+            self._advance_origin(seed_dir)
+            before_sha = self._head_sha(clone_dir)
+
+            with self.assertRaises(gh_proxy.ToolExecutionError) as raised:
+                self._sync(clone_dir)
+
+            self.assertIn(linked_worktree_dir, str(raised.exception))
+            self.assertEqual(self._current_branch(clone_dir), "feature")
+            self.assertEqual(self._head_sha(clone_dir), before_sha)
+
+    def test_リンクワークツリーのパスを渡すとメインワークツリーが同期される(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            linked_worktree_dir = os.path.join(base_dir, "linked")
+            self._run_git("-C", clone_dir, "worktree", "add", "-q", "-b", "feature",
+                          linked_worktree_dir)
+            self._advance_origin(seed_dir)
+
+            self._sync(linked_worktree_dir)
+
+            self.assertEqual(
+                self._head_sha(clone_dir),
+                self._run_git("-C", origin_dir, "rev-parse", "main"),
+            )
+            self.assertEqual(self._current_branch(linked_worktree_dir), "feature")
+
+    def test_マージがuntrackedファイルと衝突すると元ブランチへ戻す(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+            self._run_git("-C", clone_dir, "switch", "-q", "-c", "feature")
+            before_sha = self._head_sha(clone_dir)
+            self._advance_origin(seed_dir, name="added.txt", content="from origin\n")
+            self._write_file(clone_dir, "added.txt", "untracked local\n")
+
+            with self.assertRaises(gh_proxy.ToolExecutionError) as raised:
+                self._sync(clone_dir)
+
+            self.assertIn("feature", str(raised.exception))
+            self.assertEqual(self._current_branch(clone_dir), "feature")
+            self.assertEqual(self._head_sha(clone_dir), before_sha)
+            with open(os.path.join(clone_dir, "added.txt")) as f:
+                self.assertEqual(f.read(), "untracked local\n")
+
+    def test_bareリポジトリを指定すると中断する(self):
+        with tempfile.TemporaryDirectory() as base_dir:
+            origin_dir, seed_dir, clone_dir = self._create_origin_and_clone(base_dir)
+
+            with self.assertRaises(gh_proxy.ToolExecutionError):
+                self._sync(origin_dir)
+
+
 if __name__ == "__main__":
     unittest.main()
