@@ -31,7 +31,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cc-stop"
+            "command": "cc-stop",
+            "async": true,
+            "timeout": 40
           }
         ]
       }
