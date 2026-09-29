@@ -3,7 +3,7 @@ name: defensive-planner
 description: 実装タスクの防衛的計画評価を行い、破壊的変更とデグレーションリスクの最小化に焦点を当てた評価を提供する
 tools: Read, Grep, WebSearch, WebFetch, LSP
 model: opus
-effort: high
+effort: medium
 ---
 
 # 防衛的計画評価エージェント
