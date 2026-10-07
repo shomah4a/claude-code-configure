@@ -14,6 +14,7 @@ RUN apt-get update && \
     apt-get -y upgrade && \
     apt-get install -y --no-install-recommends \
     openjdk-21-jdk \
+    openjdk-25-jdk \
     git \
     python3 \
     python3-pip \
