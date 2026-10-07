@@ -8,13 +8,22 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 # apt の対話プロンプト (tzdata 等) を抑止する。ビルド時のみ有効にするため ARG にする
 ARG DEBIAN_FRONTEND=noninteractive
 
+RUN apt-get update && \
+    apt-get -y upgrade
+RUN apt-get -y install wget gpg
+
+# for corretto
+RUN wget https://apt.corretto.aws/corretto.key -O /tmp/corretto.key
+RUN cat /tmp/corretto.key | gpg --dearmor -o /usr/share/keyrings/corretto-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/corretto-keyring.gpg] https://apt.corretto.aws stable main" | tee /etc/apt/sources.list.d/corretto.list
+
+RUN apt-get update
+
 # システムパッケージの更新と必要なツールのインストール
 # `which` は仮想パッケージのため実体の gnu-which を指定する
-RUN apt-get update && \
-    apt-get -y upgrade && \
-    apt-get install -y --no-install-recommends \
-    openjdk-21-jdk \
-    openjdk-25-jdk \
+RUN apt-get install -y --no-install-recommends \
+    java-21-amazon-corretto-jdk \
+    java-25-amazon-corretto-jdk \
     git \
     python3 \
     python3-pip \
