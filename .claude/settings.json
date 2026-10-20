@@ -55,5 +55,6 @@
   },
   "feedbackDrafts": "off",
   "feedbackSurveyRate": 0,
-  "remoteControlAtStartup": false
+  "remoteControlAtStartup": false,
+  "idleCompaction": false
 }
