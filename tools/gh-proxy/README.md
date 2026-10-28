@@ -120,6 +120,14 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 - `limit` (任意): 取得する最大件数（1-100）
 - `search` (任意): 検索クエリ（例: `created:>2024-01-01`, `updated:<2024-06-01`）
 
+**返却フィールド:**
+`gh pr list --json` の出力のうち `labels` をラベル名の文字列配列に変換して返します。
+`labels` 以外のフィールドは gh の出力と同じ値です（再シリアライズするため空白や改行の表記は異なる場合があります）。
+
+- `number`, `title`, `state`, `author`, `createdAt`, `updatedAt`
+- `labels`: PRに付与されたラベル名の配列（例: `["bug", "enhancement"]`）。
+  1件のPRにつき最大100件まで取得します。切り詰められているかどうかは出力から判別できません
+
 **例:**
 ```json
 {
@@ -177,6 +185,14 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 - `state` (任意): Issueの状態 (`open`, `closed`, `all`)
 - `limit` (任意): 取得する最大件数（1-100）
 - `search` (任意): 検索クエリ（例: `created:>2024-01-01`, `updated:<2024-06-01`）
+
+**返却フィールド:**
+`gh issue list --json` の出力のうち `labels` をラベル名の文字列配列に変換して返します。
+`labels` 以外のフィールドは gh の出力と同じ値です（再シリアライズするため空白や改行の表記は異なる場合があります）。
+
+- `number`, `title`, `state`, `author`, `createdAt`, `updatedAt`
+- `labels`: Issueに付与されたラベル名の配列（例: `["bug", "enhancement"]`）。
+  1件のIssueにつき最大100件まで取得します。切り詰められているかどうかは出力から判別できません
 
 **例:**
 ```json

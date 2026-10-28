@@ -29,7 +29,7 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_pr_list_args("octocat/hello-world", {}),
             ["pr", "list", "--repo", "octocat/hello-world", "--json",
-             "number,title,state,author,createdAt,updatedAt"],
+             "number,title,state,author,createdAt,updatedAt,labels"],
         )
 
     def test_PR一覧取得でstateとlimitとsearchを指定すると対応するオプションを付加する(self):
@@ -37,7 +37,7 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_pr_list_args("octocat/hello-world", arguments),
             ["pr", "list", "--repo", "octocat/hello-world", "--json",
-             "number,title,state,author,createdAt,updatedAt",
+             "number,title,state,author,createdAt,updatedAt,labels",
              "--state", "open", "--limit", "10", "--search", "created:>2024-01-01"],
         )
 
@@ -53,7 +53,7 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_issue_list_args("octocat/hello-world", {}),
             ["issue", "list", "--repo", "octocat/hello-world", "--json",
-             "number,title,state,author,createdAt,updatedAt"],
+             "number,title,state,author,createdAt,updatedAt,labels"],
         )
 
     def test_Issue一覧取得でstateとlimitとsearchを指定すると対応するオプションを付加する(self):
@@ -61,7 +61,7 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_issue_list_args("octocat/hello-world", arguments),
             ["issue", "list", "--repo", "octocat/hello-world", "--json",
-             "number,title,state,author,createdAt,updatedAt",
+             "number,title,state,author,createdAt,updatedAt,labels",
              "--state", "closed", "--limit", "5", "--search", "updated:<2024-06-01"],
         )
 
@@ -84,6 +84,55 @@ class BuildGhCommandArgsTest(unittest.TestCase):
             gh_proxy.build_gh_issue_comments_args("octocat/hello-world", 456),
             ["issue", "view", "456", "--repo", "octocat/hello-world", "--json", "comments"],
         )
+
+
+class ExtractLabelNamesTest(unittest.TestCase):
+    """一覧取得の出力の labels をラベル名の配列へ変換する純関数のテスト"""
+
+    def test_labelsの各要素をname文字列の配列に置き換える(self):
+        stdout = ('[{"number":1,"labels":[{"id":"LA_1","name":"bug","description":"d","color":"red"},'
+                  '{"id":"LA_2","name":"enhancement","description":"","color":"blue"}]}]\n')
+        self.assertEqual(
+            gh_proxy.extract_label_names(stdout),
+            '[{"number":1,"labels":["bug","enhancement"]}]',
+        )
+
+    def test_labelsが空配列の要素は空配列のまま返す(self):
+        self.assertEqual(
+            gh_proxy.extract_label_names('[{"number":1,"labels":[]}]'),
+            '[{"number":1,"labels":[]}]',
+        )
+
+    def test_一覧が0件の場合は空配列を返す(self):
+        self.assertEqual(gh_proxy.extract_label_names("[]\n"), "[]")
+
+    def test_labels以外のフィールドを変更せずに保持する(self):
+        stdout = ('[{"number":2,"title":"t","state":"OPEN","author":{"login":"octocat"},'
+                  '"createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-02T00:00:00Z","labels":[]}]')
+        self.assertEqual(gh_proxy.extract_label_names(stdout), stdout)
+
+    def test_非ASCIIのタイトルとラベル名をエスケープせずに出力する(self):
+        stdout = '[{"title":"日本語タイトル","labels":[{"id":"LA_1","name":"不具合","description":"","color":"red"}]}]'
+        self.assertEqual(
+            gh_proxy.extract_label_names(stdout),
+            '[{"title":"日本語タイトル","labels":["不具合"]}]',
+        )
+
+    def test_JSONとして解釈できない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.extract_label_names("not json")
+
+    def test_トップレベルが配列でない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.extract_label_names('{"labels":[]}')
+
+    def test_labelsを持たない要素はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.extract_label_names('[{"number":1}]')
+
+    def test_nameを持たないラベルはToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.extract_label_names('[{"number":1,"labels":[{"id":"LA_1"}]}]')
 
 
 class ValidateArgumentsTest(unittest.TestCase):

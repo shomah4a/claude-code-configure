@@ -16,12 +16,14 @@ import re
 import os
 import sys
 from wsgiref.simple_server import make_server
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Callable, List, Optional, Tuple
 
 # サーバー設定
 PORT = int(os.environ.get('GH_PROXY_PORT', '30721'))
 TIMEOUT = int(os.environ.get('GH_PROXY_TIMEOUT', '30'))
 PROTOCOL_VERSION = "2024-11-05"
+# gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
+JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
 SERVER_VERSION = "1.5.0"
 
@@ -71,7 +73,7 @@ TOOLS = [
     },
     {
         "name": "gh_pr_list",
-        "description": "指定されたリポジトリのPull Request一覧を取得します",
+        "description": "指定されたリポジトリのPull Request一覧を取得します。各PRの labels はラベル名の文字列配列です",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -131,7 +133,7 @@ TOOLS = [
     },
     {
         "name": "gh_issue_list",
-        "description": "指定されたリポジトリのIssue一覧を取得します",
+        "description": "指定されたリポジトリのIssue一覧を取得します。各Issueの labels はラベル名の文字列配列です",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -513,7 +515,7 @@ def build_gh_repo_view_args(repo: str) -> List[str]:
 
 def build_gh_pr_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
     """gh_pr_list の gh コマンド引数を組み立てる"""
-    args = ["pr", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt"]
+    args = ["pr", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt,labels"]
 
     if "state" in arguments:
         args.extend(["--state", arguments["state"]])
@@ -534,7 +536,7 @@ def build_gh_pr_view_args(repo: str, number: int) -> List[str]:
 
 def build_gh_issue_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
     """gh_issue_list の gh コマンド引数を組み立てる"""
-    args = ["issue", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt"]
+    args = ["issue", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt,labels"]
 
     if "state" in arguments:
         args.extend(["--state", arguments["state"]])
@@ -563,14 +565,53 @@ def build_gh_issue_comments_args(repo: str, number: int) -> List[str]:
     return ["issue", "view", str(number), "--repo", repo, "--json", "comments"]
 
 
-def run_gh_tool(args: List[str], error_label: str) -> List[Dict[str, Any]]:
-    """gh コマンドを実行し、結果を MCP content 形式で返す"""
+def label_name(label: Any) -> str:
+    """gh の labels 要素からラベル名を取り出す"""
+    if not isinstance(label, dict) or not isinstance(label.get("name"), str):
+        raise ToolExecutionError("labels の要素に name 文字列がありません")
+    return label["name"]
+
+
+def replace_labels_with_names(item: Any) -> Dict[str, Any]:
+    """一覧要素の labels をラベル名の配列に置き換えた新しい要素を返す"""
+    if not isinstance(item, dict) or not isinstance(item.get("labels"), list):
+        raise ToolExecutionError("一覧の要素に labels 配列がありません")
+    return {**item, "labels": [label_name(label) for label in item["labels"]]}
+
+
+def extract_label_names(stdout: str) -> str:
+    """gh issue/pr list の JSON 出力の labels をラベル名の配列に変換する"""
+    try:
+        items = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise ToolExecutionError(f"gh の出力を JSON として解釈できませんでした: {e}")
+
+    if not isinstance(items, list):
+        raise ToolExecutionError("gh の出力が配列ではありません")
+
+    converted = [replace_labels_with_names(item) for item in items]
+    return json.dumps(converted, ensure_ascii=False, separators=JSON_COMPACT_SEPARATORS)
+
+
+def pass_through_stdout(stdout: str) -> str:
+    """gh の出力を加工せずに返す"""
+    return stdout
+
+
+def run_gh_tool(args: List[str], error_label: str,
+                transform_stdout: Callable[[str], str] = pass_through_stdout) -> List[Dict[str, Any]]:
+    """gh コマンドを実行し、transform_stdout で変換した結果を MCP content 形式で返す"""
     stdout, stderr, code = execute_gh_command(args)
 
     if code != 0:
         raise ToolExecutionError(f"{error_label}: {stderr}")
 
-    return [{"type": "text", "text": stdout}]
+    try:
+        text = transform_stdout(stdout)
+    except ToolExecutionError as e:
+        raise ToolExecutionError(f"{error_label}: {e}")
+
+    return [{"type": "text", "text": text}]
 
 
 def execute_gh_repo_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -580,7 +621,7 @@ def execute_gh_repo_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str,
 
 def execute_gh_pr_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_pr_list ツールの実行"""
-    return run_gh_tool(build_gh_pr_list_args(repo, arguments), "gh pr list failed")
+    return run_gh_tool(build_gh_pr_list_args(repo, arguments), "gh pr list failed", extract_label_names)
 
 
 def execute_gh_pr_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -590,7 +631,7 @@ def execute_gh_pr_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, A
 
 def execute_gh_issue_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_issue_list ツールの実行"""
-    return run_gh_tool(build_gh_issue_list_args(repo, arguments), "gh issue list failed")
+    return run_gh_tool(build_gh_issue_list_args(repo, arguments), "gh issue list failed", extract_label_names)
 
 
 def execute_gh_issue_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
