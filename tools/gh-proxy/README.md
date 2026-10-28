@@ -126,7 +126,8 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 
 - `number`, `title`, `state`, `author`, `createdAt`, `updatedAt`
 - `labels`: PRに付与されたラベル名の配列（例: `["bug", "enhancement"]`）。
-  1件のPRにつき最大100件まで取得します。切り詰められているかどうかは出力から判別できません
+  1件のPRにつき最大100件まで取得します。切り詰められているかどうかは出力から判別できません。
+  ラベルの説明や色が必要な場合は gh_label_list を利用してください
 
 **例:**
 ```json
@@ -192,7 +193,8 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 
 - `number`, `title`, `state`, `author`, `createdAt`, `updatedAt`
 - `labels`: Issueに付与されたラベル名の配列（例: `["bug", "enhancement"]`）。
-  1件のIssueにつき最大100件まで取得します。切り詰められているかどうかは出力から判別できません
+  1件のIssueにつき最大100件まで取得します。切り詰められているかどうかは出力から判別できません。
+  ラベルの説明や色が必要な場合は gh_label_list を利用してください
 
 **例:**
 ```json
@@ -438,6 +440,36 @@ fork 運用では、判定されたブランチ名と origin の内容が食い�
 }
 ```
 
+### 12. gh_label_list
+
+指定されたリポジトリのラベル一覧を取得します。
+
+**引数:**
+- `owner` (必須): リポジトリのオーナー名
+- `repository_name` (必須): リポジトリ名
+- `limit` (任意): 取得する最大件数（1-100）。未指定時は100
+- `search` (任意): ラベル名と説明を対象とする検索文字列
+
+**返却フィールド:**
+`gh label list --json` の出力をそのまま返します。0件の場合、gh は何も出力しないため空配列 `[]` を返します。
+
+- `color`, `createdAt`, `description`, `id`, `isDefault`, `name`, `updatedAt`, `url`
+
+総件数は返らないため、ラベルが `limit` を超えて存在する場合に切り詰められているかどうかは出力から判別できません。
+`limit` の上限が100のため、101件以上のラベルを持つリポジトリでは全件を取得できません。
+
+**例:**
+```json
+{
+  "name": "gh_label_list",
+  "arguments": {
+    "owner": "anthropics",
+    "repository_name": "anthropic-sdk-python",
+    "search": "bug"
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -446,6 +478,7 @@ fork 運用では、判定されたブランチ名と origin の内容が食い�
 - リポジトリ情報の取得
 - Pull Requestの取得（一覧/詳細/コメント）
 - Issueの取得（一覧/詳細/コメント）
+- ラベル一覧の取得
 
 加えて、以下の書き込み操作を提供します：
 - ブランチのpush（git_push）: remote は origin 固定。force push・ブランチ削除・オプション指定は不可。

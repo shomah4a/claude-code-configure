@@ -22,6 +22,8 @@ from typing import Dict, Any, Callable, List, Optional, Tuple
 PORT = int(os.environ.get('GH_PROXY_PORT', '30721'))
 TIMEOUT = int(os.environ.get('GH_PROXY_TIMEOUT', '30'))
 PROTOCOL_VERSION = "2024-11-05"
+# gh_label_list で limit 未指定時に取得する件数 (gh の既定 30 件より多く取得するため明示する)
+LABEL_LIST_DEFAULT_LIMIT = 100
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
@@ -161,6 +163,36 @@ TOOLS = [
                 "search": {
                     "type": "string",
                     "description": "検索クエリ（例: created:>2024-01-01, updated:<2024-06-01）"
+                }
+            },
+            "required": ["owner", "repository_name"]
+        }
+    },
+    {
+        "name": "gh_label_list",
+        "description": "指定されたリポジトリのラベル一覧を取得します。各ラベルは color, createdAt, description, id, isDefault, name, updatedAt, url を含みます。limit 未指定時は100件まで取得し、最大も100件です。総件数は返らないため、切り詰められているかどうかは出力から判別できません。0件の場合は空配列を返します",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "リポジトリのオーナー名",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                },
+                "repository_name": {
+                    "type": "string",
+                    "description": "リポジトリ名",
+                    "pattern": "^[a-zA-Z0-9._-]+$"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得する最大件数（未指定時は100）",
+                    "minimum": 1,
+                    "maximum": 100
+                },
+                "search": {
+                    "type": "string",
+                    "description": "ラベル名と説明を対象とする検索文字列"
                 }
             },
             "required": ["owner", "repository_name"]
@@ -555,6 +587,19 @@ def build_gh_issue_view_args(repo: str, number: int) -> List[str]:
     return ["issue", "view", str(number), "--repo", repo, "--json", "number,title,body,state,author,createdAt,updatedAt,labels,closedByPullRequestsReferences,parent,subIssues,subIssuesSummary,blockedBy,blocking"]
 
 
+def build_gh_label_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
+    """gh_label_list の gh コマンド引数を組み立てる"""
+    limit = arguments.get("limit", LABEL_LIST_DEFAULT_LIMIT)
+    args = ["label", "list", "--repo", repo, "--json",
+            "color,createdAt,description,id,isDefault,name,updatedAt,url",
+            "--limit", str(limit)]
+
+    if "search" in arguments:
+        args.extend(["--search", arguments["search"]])
+
+    return args
+
+
 def build_gh_pr_comments_args(repo: str, number: int) -> List[str]:
     """gh_pr_comments の gh コマンド引数を組み立てる"""
     return ["pr", "view", str(number), "--repo", repo, "--json", "comments"]
@@ -591,6 +636,13 @@ def extract_label_names(stdout: str) -> str:
 
     converted = [replace_labels_with_names(item) for item in items]
     return json.dumps(converted, ensure_ascii=False, separators=JSON_COMPACT_SEPARATORS)
+
+
+def empty_stdout_as_empty_array(stdout: str) -> str:
+    """0 件時に何も出力しない gh の出力を空配列の JSON に置き換える"""
+    if stdout.strip() == "":
+        return "[]"
+    return stdout
 
 
 def pass_through_stdout(stdout: str) -> str:
@@ -637,6 +689,11 @@ def execute_gh_issue_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str
 def execute_gh_issue_view(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_issue_view ツールの実行"""
     return run_gh_tool(build_gh_issue_view_args(repo, arguments["number"]), "gh issue view failed")
+
+
+def execute_gh_label_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_label_list ツールの実行"""
+    return run_gh_tool(build_gh_label_list_args(repo, arguments), "gh label list failed", empty_stdout_as_empty_array)
 
 
 def execute_gh_pr_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1279,6 +1336,7 @@ REPO_TOOL_EXECUTORS = {
     "gh_pr_comments": execute_gh_pr_comments,
     "gh_issue_comments": execute_gh_issue_comments,
     "gh_pr_create": execute_gh_pr_create,
+    "gh_label_list": execute_gh_label_list,
 }
 
 

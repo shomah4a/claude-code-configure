@@ -73,6 +73,23 @@ class BuildGhCommandArgsTest(unittest.TestCase):
              "closedByPullRequestsReferences,parent,subIssues,subIssuesSummary,blockedBy,blocking"],
         )
 
+    def test_ラベル一覧取得で任意引数なしの場合は取得件数100を指定する(self):
+        self.assertEqual(
+            gh_proxy.build_gh_label_list_args("octocat/hello-world", {}),
+            ["label", "list", "--repo", "octocat/hello-world", "--json",
+             "color,createdAt,description,id,isDefault,name,updatedAt,url",
+             "--limit", "100"],
+        )
+
+    def test_ラベル一覧取得でlimitとsearchを指定すると対応するオプションを付加する(self):
+        arguments = {"limit": 10, "search": "bug"}
+        self.assertEqual(
+            gh_proxy.build_gh_label_list_args("octocat/hello-world", arguments),
+            ["label", "list", "--repo", "octocat/hello-world", "--json",
+             "color,createdAt,description,id,isDefault,name,updatedAt,url",
+             "--limit", "10", "--search", "bug"],
+        )
+
     def test_PRコメント取得の引数リストはcommentsフィールドのみを要求する(self):
         self.assertEqual(
             gh_proxy.build_gh_pr_comments_args("octocat/hello-world", 123),
@@ -135,6 +152,20 @@ class ExtractLabelNamesTest(unittest.TestCase):
             gh_proxy.extract_label_names('[{"number":1,"labels":[{"id":"LA_1"}]}]')
 
 
+class EmptyStdoutAsEmptyArrayTest(unittest.TestCase):
+    """0 件時に何も出力しない gh の出力を空配列へ変換する純関数のテスト"""
+
+    def test_空文字列は空配列のJSONに置き換える(self):
+        self.assertEqual(gh_proxy.empty_stdout_as_empty_array(""), "[]")
+
+    def test_改行のみの出力は空配列のJSONに置き換える(self):
+        self.assertEqual(gh_proxy.empty_stdout_as_empty_array("\n"), "[]")
+
+    def test_空でない出力は加工せずに返す(self):
+        stdout = '[{"name":"bug","color":"d73a4a"}]\n'
+        self.assertEqual(gh_proxy.empty_stdout_as_empty_array(stdout), stdout)
+
+
 class ValidateArgumentsTest(unittest.TestCase):
     """既存ツールの引数バリデーションの回帰テスト"""
 
@@ -160,6 +191,13 @@ class ValidateArgumentsTest(unittest.TestCase):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_arguments(
                 "gh_pr_list",
+                {"owner": "octocat", "repository_name": "hello-world", "limit": 101},
+            )
+
+    def test_ラベル一覧取得のlimitが上限100を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_label_list",
                 {"owner": "octocat", "repository_name": "hello-world", "limit": 101},
             )
 
@@ -194,7 +232,7 @@ class ExecuteToolDispatchTest(unittest.TestCase):
             set(gh_proxy.REPO_TOOL_EXECUTORS.keys()),
             {"gh_repo_view", "gh_pr_list", "gh_pr_view", "gh_issue_list",
              "gh_issue_view", "gh_pr_comments", "gh_issue_comments",
-             "gh_pr_create"},
+             "gh_pr_create", "gh_label_list"},
         )
 
 
