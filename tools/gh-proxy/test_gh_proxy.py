@@ -41,11 +41,12 @@ class BuildGhCommandArgsTest(unittest.TestCase):
              "--state", "open", "--limit", "10", "--search", "created:>2024-01-01"],
         )
 
-    def test_PR詳細取得の引数リストにPR番号を文字列として含める(self):
+    def test_PR詳細取得の引数リストは文字列化したPR番号と取得フィールド一覧を含む(self):
         self.assertEqual(
             gh_proxy.build_gh_pr_view_args("octocat/hello-world", 123),
             ["pr", "view", "123", "--repo", "octocat/hello-world", "--json",
-             "number,title,body,state,author,createdAt,updatedAt,mergeable,mergedAt,closingIssuesReferences"],
+             "number,title,body,state,author,createdAt,updatedAt,labels,"
+             "mergeable,mergedAt,closingIssuesReferences"],
         )
 
     def test_Issue一覧取得で任意引数なしの場合は基本引数のみを組み立てる(self):
@@ -64,11 +65,11 @@ class BuildGhCommandArgsTest(unittest.TestCase):
              "--state", "closed", "--limit", "5", "--search", "updated:<2024-06-01"],
         )
 
-    def test_Issue詳細取得の引数リストにIssue番号を文字列として含める(self):
+    def test_Issue詳細取得の引数リストは文字列化したIssue番号と取得フィールド一覧を含む(self):
         self.assertEqual(
             gh_proxy.build_gh_issue_view_args("octocat/hello-world", 456),
             ["issue", "view", "456", "--repo", "octocat/hello-world", "--json",
-             "number,title,body,state,author,createdAt,updatedAt,"
+             "number,title,body,state,author,createdAt,updatedAt,labels,"
              "closedByPullRequestsReferences,parent,subIssues,subIssuesSummary,blockedBy,blocking"],
         )
 

@@ -146,6 +146,8 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 `gh pr view --json` の出力をそのまま返します。
 
 - `number`, `title`, `body`, `state`, `author`, `createdAt`, `updatedAt`, `mergeable`, `mergedAt`
+- `labels`: PRに付与されたラベル。`[{ "id", "name", "description", "color" }]` のフラットな配列。
+  1件のPRにつき最大100件まで取得します。`totalCount` は付かないため、100件を超えて切り詰められているかどうかは出力から判別できません
 - `closingIssuesReferences`: このPRがクローズ対象とするIssue（development リンクまたは本文の closing keyword で紐付けられたもの）。
   `[{ "id", "number", "url", "repository": { "id", "name", "owner": { "id", "login" } } }]` のフラットな配列。
   `title` と `state` は含まれないため、必要な場合は `number` を用いて gh_issue_view を追加実行してください。
@@ -202,6 +204,8 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 `gh issue view --json` の出力をそのまま返します。
 
 - `number`, `title`, `body`, `state`, `author`, `createdAt`, `updatedAt`
+- `labels`: Issueに付与されたラベル。`[{ "id", "name", "description", "color" }]` のフラットな配列。
+  1件のIssueにつき最大100件まで取得します。`totalCount` は付かないため、100件を超えて切り詰められているかどうかは出力から判別できません
 - `closedByPullRequestsReferences`: このIssueをクローズする（した）PR。
   `[{ "id", "number", "url", "repository": { "id", "name", "owner": { "id", "login" } } }]` のフラットな配列。
   `title` と `state` は含まれないため、必要な場合は `number` を用いて gh_pr_view を追加実行してください。
