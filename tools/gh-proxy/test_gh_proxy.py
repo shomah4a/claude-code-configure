@@ -69,7 +69,7 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_issue_view_args("octocat/hello-world", 456),
             ["issue", "view", "456", "--repo", "octocat/hello-world", "--json",
-             "number,title,body,state,author,createdAt,updatedAt,labels,"
+             "number,title,body,state,stateReason,author,createdAt,updatedAt,labels,"
              "closedByPullRequestsReferences,parent,subIssues,subIssuesSummary,blockedBy,blocking"],
         )
 

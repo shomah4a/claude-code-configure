@@ -222,6 +222,11 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 `gh issue view --json` の出力をそのまま返します。
 
 - `number`, `title`, `body`, `state`, `author`, `createdAt`, `updatedAt`
+- `stateReason`: Issueが現在の状態になった理由。`COMPLETED` / `NOT_PLANNED` / `DUPLICATE` / `REOPENED` のいずれか。
+  理由が記録されていない場合 (一度もクローズされていない open の Issue など) は空文字になります
+  （gh CLI がこのフィールドを文字列型で扱うため、GraphQL の null は空文字として出力されます）。
+  `DUPLICATE` の場合も重複先の Issue は含まれません（gh の `--json` で取得できないため）。
+  GitHub Enterprise Server ではバージョンにより `DUPLICATE` が返らず `NOT_PLANNED` となる可能性があります
 - `labels`: Issueに付与されたラベル。`[{ "id", "name", "description", "color" }]` のフラットな配列。
   1件のIssueにつき最大100件まで取得します。`totalCount` は付かないため、100件を超えて切り詰められているかどうかは出力から判別できません
 - `closedByPullRequestsReferences`: このIssueをクローズする（した）PR。
