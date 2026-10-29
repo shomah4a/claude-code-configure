@@ -29,7 +29,7 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_pr_list_args("octocat/hello-world", {}),
             ["pr", "list", "--repo", "octocat/hello-world", "--json",
-             "number,title,state,author,createdAt,updatedAt,labels"],
+             "number,title,state,author,createdAt,updatedAt,labels,headRefName,isCrossRepository"],
         )
 
     def test_PR一覧取得でstateとlimitとsearchを指定すると対応するオプションを付加する(self):
@@ -37,7 +37,7 @@ class BuildGhCommandArgsTest(unittest.TestCase):
         self.assertEqual(
             gh_proxy.build_gh_pr_list_args("octocat/hello-world", arguments),
             ["pr", "list", "--repo", "octocat/hello-world", "--json",
-             "number,title,state,author,createdAt,updatedAt,labels",
+             "number,title,state,author,createdAt,updatedAt,labels,headRefName,isCrossRepository",
              "--state", "open", "--limit", "10", "--search", "created:>2024-01-01"],
         )
 
@@ -126,6 +126,11 @@ class ExtractLabelNamesTest(unittest.TestCase):
     def test_labels以外のフィールドを変更せずに保持する(self):
         stdout = ('[{"number":2,"title":"t","state":"OPEN","author":{"login":"octocat"},'
                   '"createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-02T00:00:00Z","labels":[]}]')
+        self.assertEqual(gh_proxy.extract_label_names(stdout), stdout)
+
+    def test_文字列のheadRefNameと真偽値のisCrossRepositoryを型を保って出力する(self):
+        stdout = ('[{"number":3,"headRefName":"feature/x","isCrossRepository":false,"labels":[]},'
+                  '{"number":4,"headRefName":"fix","isCrossRepository":true,"labels":[]}]')
         self.assertEqual(gh_proxy.extract_label_names(stdout), stdout)
 
     def test_非ASCIIのタイトルとラベル名をエスケープせずに出力する(self):

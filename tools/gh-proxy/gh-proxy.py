@@ -27,7 +27,7 @@ LABEL_LIST_DEFAULT_LIMIT = 100
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.8.0"
+SERVER_VERSION = "1.9.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
@@ -75,7 +75,7 @@ TOOLS = [
     },
     {
         "name": "gh_pr_list",
-        "description": "指定されたリポジトリのPull Request一覧を取得します。各PRの labels はラベル名の文字列配列です",
+        "description": "指定されたリポジトリのPull Request一覧を取得します。各PRの labels はラベル名の文字列配列です。headRefName は PR の元ブランチ名、isCrossRepository は fork から作られた PR かどうかです (fork 由来の PR の headRefName は fork 側のブランチ名です)",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -91,7 +91,7 @@ TOOLS = [
                 },
                 "state": {
                     "type": "string",
-                    "description": "PRの状態",
+                    "description": "取得するPRの状態。open: オープン中のみ、closed: クローズ済み (マージ済みを含む)、merged: マージ済みのみ、all: すべて。未指定時は open",
                     "enum": ["open", "closed", "merged", "all"]
                 },
                 "limit": {
@@ -549,7 +549,7 @@ def build_gh_repo_view_args(repo: str) -> List[str]:
 
 def build_gh_pr_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
     """gh_pr_list の gh コマンド引数を組み立てる"""
-    args = ["pr", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt,labels"]
+    args = ["pr", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt,labels,headRefName,isCrossRepository"]
 
     if "state" in arguments:
         args.extend(["--state", arguments["state"]])
