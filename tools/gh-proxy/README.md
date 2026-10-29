@@ -116,7 +116,11 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 **引数:**
 - `owner` (必須): リポジトリのオーナー名
 - `repository_name` (必須): リポジトリ名
-- `state` (任意): PRの状態 (`open`, `closed`, `merged`, `all`)
+- `state` (任意): 取得するPRの状態。未指定時は `open`
+  - `open`: オープン中のPRのみ
+  - `closed`: クローズ済みのPR（マージ済みを含む）
+  - `merged`: マージ済みのPRのみ
+  - `all`: すべてのPR
 - `limit` (任意): 取得する最大件数（1-100）
 - `search` (任意): 検索クエリ（例: `created:>2024-01-01`, `updated:<2024-06-01`）
 

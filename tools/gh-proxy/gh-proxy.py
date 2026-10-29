@@ -91,7 +91,7 @@ TOOLS = [
                 },
                 "state": {
                     "type": "string",
-                    "description": "PRの状態",
+                    "description": "取得するPRの状態。open: オープン中のみ、closed: クローズ済み (マージ済みを含む)、merged: マージ済みのみ、all: すべて。未指定時は open",
                     "enum": ["open", "closed", "merged", "all"]
                 },
                 "limit": {
