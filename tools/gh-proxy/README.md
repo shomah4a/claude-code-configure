@@ -414,10 +414,12 @@ fork 運用では、判定されたブランチ名と origin の内容が食い�
 
 同期の前に `git fetch --prune --no-prune-tags origin` を実行します。
 
-fetch は `--prune` 付きで実行するため、remote で削除されたブランチの remote-tracking ref（`refs/remotes/<remote>/*`）は削除されます。
+fetch は `--prune` 付きで実行するため、origin で削除されたブランチの remote-tracking ref（`refs/remotes/origin/*`）は削除されます。
 削除されるのは remote-tracking ref のみで、ローカルブランチは削除しません。
 tag は `fetch.pruneTags` 設定の有無によらず削除しないよう `--no-prune-tags` を明示しています。
 削除された remote-tracking ref はその reflog ごと消えるため、ローカルブランチから辿れないコミットは復元できなくなる場合があります。
+上記の fork 運用で origin に判定されたブランチが存在しない場合、古い `refs/remotes/origin/<デフォルトブランチ>` も prune で削除されるため、
+古い ref で同期を進めることはなく後述の検証で中断します。
 
 **ブランチを切り替える前に以下を検証し、該当する場合は何も変更せず中断します（fail-closed）:**
 - git の操作（マージ / リベース / cherry-pick / revert / bisect）が進行中
