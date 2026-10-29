@@ -356,10 +356,16 @@ origin が GitHub 以外の remote であっても push を実行します。
 
 ### 10. git_merge_default_branch
 
-クローン済みリポジトリで `git fetch --all` を実行し、origin のデフォルトブランチを現在チェックアウトされているブランチへ `--no-edit` でマージします。
+クローン済みリポジトリで `git fetch --all --prune --no-prune-tags` を実行し、origin のデフォルトブランチを現在チェックアウトされているブランチへ `--no-edit` でマージします。
 
 **引数:**
 - `path` (必須): クローン済みリポジトリルートの絶対パス（サーバーが動作するホスト側ファイルシステム上のパス）
+
+fetch は `--prune` 付きで実行するため、remote で削除されたブランチの remote-tracking ref（`refs/remotes/<remote>/*`）は削除されます。
+削除されるのは remote-tracking ref のみで、ローカルブランチは削除しません。
+tag は `fetch.pruneTags` 設定の有無によらず削除しないよう `--no-prune-tags` を明示しています。
+削除された remote-tracking ref はその reflog ごと消えるため、ローカルブランチから辿れないコミットは復元できなくなる場合があります。
+`--all` を指定しているため、origin 以外の remote も prune の対象になります。
 
 デフォルトブランチは対象リポジトリを作業ディレクトリとして `gh repo view` で判定します。
 判定できない場合（GitHub 以外の remote、gh 未認証等）はマージを実行しません（fail-closed）。
@@ -405,6 +411,13 @@ origin が GitHub 以外の remote であっても push を実行します。
 判定できない場合（GitHub 以外の remote、gh 未認証等）は同期を実行しません（fail-closed）。
 remote は `origin` 固定です。gh の base repo 解決が `upstream` 等 origin 以外を向いている
 fork 運用では、判定されたブランチ名と origin の内容が食い違う余地があります。
+
+同期の前に `git fetch --prune --no-prune-tags origin` を実行します。
+
+fetch は `--prune` 付きで実行するため、remote で削除されたブランチの remote-tracking ref（`refs/remotes/<remote>/*`）は削除されます。
+削除されるのは remote-tracking ref のみで、ローカルブランチは削除しません。
+tag は `fetch.pruneTags` 設定の有無によらず削除しないよう `--no-prune-tags` を明示しています。
+削除された remote-tracking ref はその reflog ごと消えるため、ローカルブランチから辿れないコミットは復元できなくなる場合があります。
 
 **ブランチを切り替える前に以下を検証し、該当する場合は何も変更せず中断します（fail-closed）:**
 - git の操作（マージ / リベース / cherry-pick / revert / bisect）が進行中

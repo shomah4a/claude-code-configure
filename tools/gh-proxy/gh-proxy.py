@@ -336,6 +336,8 @@ TOOLS = [
         "description": (
             "クローン済みリポジトリのメインワークツリーを origin のデフォルトブランチへ切り替え、"
             "fast-forward で origin の内容に同期します。"
+            "同期前に origin を prune 付きで fetch するため、origin で削除されたブランチの "
+            "remote-tracking ref は削除されます (ローカルブランチと tag は削除しません)。"
             "path にリンクワークツリーを指定した場合も、書き換わるのは解決されたメインワークツリーです。"
             "未コミットの変更 (追跡対象) がある場合、ローカルの歴史が origin と食い違っている場合、"
             "git の操作が進行中の場合は何も変更せず中断します"
@@ -356,7 +358,7 @@ TOOLS = [
     },
     {
         "name": "git_merge_default_branch",
-        "description": "クローン済みリポジトリで git fetch --all を実行し、origin のデフォルトブランチを現在のブランチへマージします。コンフリクト時は merge --abort で巻き戻します",
+        "description": "クローン済みリポジトリで git fetch --all --prune --no-prune-tags を実行し、origin のデフォルトブランチを現在のブランチへマージします。fetch により各 remote で削除されたブランチの remote-tracking ref は削除されます (ローカルブランチと tag は削除しません)。コンフリクト時は merge --abort で巻き戻します",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -801,8 +803,12 @@ def execute_git_push(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def build_git_fetch_all_args(path: str) -> List[str]:
-    """git_merge_default_branch の fetch フェーズの git コマンド引数を組み立てる"""
-    return ["-C", path, "fetch", "--all"]
+    """git_merge_default_branch の fetch フェーズの git コマンド引数を組み立てる
+
+    remote で削除されたブランチの remote-tracking ref を残さないよう --prune を付ける。
+    fetch.pruneTags 設定の有無によらずローカル tag を削除しないよう --no-prune-tags を明示する。
+    """
+    return ["-C", path, "fetch", "--all", "--prune", "--no-prune-tags"]
 
 
 def build_git_merge_args(path: str, default_branch: str) -> List[str]:
@@ -922,8 +928,12 @@ def build_git_tracked_status_args(path: str) -> List[str]:
 
 
 def build_git_fetch_origin_args(path: str) -> List[str]:
-    """origin からの fetch の git コマンド引数を組み立てる"""
-    return ["-C", path, "fetch", "origin"]
+    """origin からの fetch の git コマンド引数を組み立てる
+
+    remote で削除されたブランチの remote-tracking ref を残さないよう --prune を付ける。
+    fetch.pruneTags 設定の有無によらずローカル tag を削除しないよう --no-prune-tags を明示する。
+    """
+    return ["-C", path, "fetch", "--prune", "--no-prune-tags", "origin"]
 
 
 def build_git_verify_commit_args(path: str, ref: str) -> List[str]:
