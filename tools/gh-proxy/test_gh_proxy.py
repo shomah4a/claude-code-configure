@@ -418,10 +418,10 @@ class BuildGitMergeDefaultBranchArgsTest(unittest.TestCase):
             ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
         )
 
-    def test_パスから全リモートfetchの引数リストを組み立てる(self):
+    def test_パスから全リモートをtagを除いてpruneしつつfetchする引数リストを組み立てる(self):
         self.assertEqual(
             gh_proxy.build_git_fetch_all_args("/home/user/repo"),
-            ["-C", "/home/user/repo", "fetch", "--all"],
+            ["-C", "/home/user/repo", "fetch", "--all", "--prune", "--no-prune-tags"],
         )
 
     def test_パスとデフォルトブランチからorigin追跡refをno_editでマージする引数リストを組み立てる(self):
@@ -595,10 +595,10 @@ class BuildGitSyncDefaultBranchArgsTest(unittest.TestCase):
             ["-C", "/home/user/repo", "status", "--porcelain", "--untracked-files=no"],
         )
 
-    def test_パスからorigin限定fetchの引数リストを組み立てる(self):
+    def test_パスからoriginのみをtagを除いてpruneしつつfetchする引数リストを組み立てる(self):
         self.assertEqual(
             gh_proxy.build_git_fetch_origin_args("/home/user/repo"),
-            ["-C", "/home/user/repo", "fetch", "origin"],
+            ["-C", "/home/user/repo", "fetch", "--prune", "--no-prune-tags", "origin"],
         )
 
     def test_refのコミット解決確認の引数リストにコミット指定子を付加する(self):
