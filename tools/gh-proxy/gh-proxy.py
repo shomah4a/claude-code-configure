@@ -27,7 +27,7 @@ LABEL_LIST_DEFAULT_LIMIT = 100
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.7.0"
+SERVER_VERSION = "1.8.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
