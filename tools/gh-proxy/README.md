@@ -128,6 +128,9 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 - `labels`: PRに付与されたラベル名の配列（例: `["bug", "enhancement"]`）。
   1件のPRにつき最大100件まで取得します。切り詰められているかどうかは出力から判別できません。
   ラベルの説明や色が必要な場合は gh_label_list を利用してください
+- `headRefName`: PR の元ブランチ名
+- `isCrossRepository`: fork から作られた PR の場合 `true`。
+  fork 由来の PR の `headRefName` は fork 側のブランチ名であり、元リポジトリの同名ブランチとは別物です
 
 **例:**
 ```json

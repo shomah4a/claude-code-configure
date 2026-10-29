@@ -75,7 +75,7 @@ TOOLS = [
     },
     {
         "name": "gh_pr_list",
-        "description": "指定されたリポジトリのPull Request一覧を取得します。各PRの labels はラベル名の文字列配列です",
+        "description": "指定されたリポジトリのPull Request一覧を取得します。各PRの labels はラベル名の文字列配列です。headRefName は PR の元ブランチ名、isCrossRepository は fork から作られた PR かどうかです (fork 由来の PR の headRefName は fork 側のブランチ名です)",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -549,7 +549,7 @@ def build_gh_repo_view_args(repo: str) -> List[str]:
 
 def build_gh_pr_list_args(repo: str, arguments: Dict[str, Any]) -> List[str]:
     """gh_pr_list の gh コマンド引数を組み立てる"""
-    args = ["pr", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt,labels"]
+    args = ["pr", "list", "--repo", repo, "--json", "number,title,state,author,createdAt,updatedAt,labels,headRefName,isCrossRepository"]
 
     if "state" in arguments:
         args.extend(["--state", arguments["state"]])
