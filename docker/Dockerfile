@@ -40,6 +40,7 @@ RUN apt-get install -y --no-install-recommends \
     gnu-which \
     emacs-nox \
     rcs \
+    graphviz \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 22のインストール
