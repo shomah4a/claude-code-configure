@@ -708,6 +708,56 @@ iteration のフィールドが持つ iteration の一覧は含まれません�
 }
 ```
 
+### 18. gh_project_item_list
+
+指定されたプロジェクトのアイテム（issue / Pull Request / draft issue）と、各アイテムのフィールド値の一覧を取得します。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）
+- `project_number` (必須): プロジェクト番号
+- `limit` (任意): 取得する最大件数（1-100）。未指定時は30
+- `query` (任意): Projects のフィルタ構文による絞り込み（例: `status:"In Progress"`, `-status:Done`, `assignee:octocat is:issue`）
+
+`gh project item-list <project_number> --owner <owner> --limit <n> --format json` の出力から、
+各アイテムの `content.body`（issue / Pull Request の本文）を除いて返します。
+本文が必要な場合は gh_issue_view / gh_pr_view を利用してください。
+
+**返却フィールド:**
+- `totalCount`: 条件に一致するアイテムの総数
+- `items`: アイテムの配列。0件の場合は空配列
+  - `id`: アイテムの ID
+  - `content`: アイテムの内容
+    - issue / Pull Request: `type`（`Issue` / `PullRequest`）, `title`, `number`, `repository`（`owner/name` 形式）, `url`
+    - draft issue: `type`（`DraftIssue`）, `title`
+    - gh が種類を判別できないアイテムでは `null`
+  - フィールド値: フィールドごとに1つのキー。値が設定されていないフィールドのキーは含まれません
+
+**フィールド値のキー名と値:**
+- キー名は、フィールド名の先頭1文字のみを小文字にしたものです（gh の変換規則）。
+  `Status` は `status`、`Target Date` は `target Date` になります（スペースは残ります）
+- single select の値は選択肢名の文字列です（例: `"status": "In Progress"`）
+- text / date は文字列、number は数値、iteration は `{ "title", "startDate", "duration", "iterationId" }` です
+- labels / assignees などの複数値は文字列の配列です
+
+**注意事項:**
+- `totalCount` が `items` の件数より大きい場合は切り詰められています。続きを取得する手段はないため、`query` で絞り込んでください。
+  `limit` の上限が100のため、条件に一致するアイテムが101件以上ある場合は全件を取得できません
+- `query` は github.com と GitHub Enterprise Server 3.20 以上で利用できます。
+  対応していないホストでは `the --query flag is not supported on this GitHub host` のエラーになります
+- draft issue は `url` を持たないため、gh_project_item_edit の対象にできません
+
+**例:**
+```json
+{
+  "name": "gh_project_item_list",
+  "arguments": {
+    "owner": "octocat",
+    "project_number": 1,
+    "query": "-status:Done"
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -722,6 +772,7 @@ iteration のフィールドが持つ iteration の一覧は含まれません�
 - GitHub Actions の job / step のログの取得
 - GitHub Projects のプロジェクト一覧の取得
 - GitHub Projects のフィールド一覧の取得
+- GitHub Projects のアイテムとフィールド値の一覧の取得
 
 gh_run_job_log が返すログ本文は、workflow の出力そのものです。以下の点を考慮してください。
 - ログには、GitHub がマスクしなかった機微な値（トークン、接続文字列、個人情報など）が含まれる可能性があり、

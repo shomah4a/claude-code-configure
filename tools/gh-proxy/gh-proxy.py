@@ -52,6 +52,12 @@ PROJECT_DEFAULT_LIMIT = 30
 PROJECT_MAX_LIMIT = 100
 # gh_project_list で各プロジェクトから readme を除く jq 式
 PROJECT_LIST_JQ = "{totalCount, projects: [.projects[] | del(.readme)]}"
+# gh_project_item_list で各アイテムの content から body を除く jq 式
+# content は判別できない種類のアイテムで null になる
+PROJECT_ITEM_LIST_JQ = (
+    "{totalCount, items: [.items[] | "
+    "if .content == null then . else .content |= del(.body) end]}"
+)
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
@@ -597,6 +603,50 @@ TOOLS = [
                     "description": "取得する最大件数（未指定時は30）",
                     "minimum": 1,
                     "maximum": PROJECT_MAX_LIMIT
+                }
+            },
+            "required": ["owner", "project_number"]
+        }
+    },
+    {
+        "name": "gh_project_item_list",
+        "description": (
+            "指定された GitHub Projects のプロジェクトのアイテム (issue / Pull Request / draft issue) と、"
+            "各アイテムのフィールド値の一覧を取得します。totalCount と items を返します。"
+            "各アイテムは id、content (type, title, number, repository, url。本文は含みません)、"
+            "およびフィールド値を含みます。フィールド値のキーはフィールド名の先頭1文字を小文字にしたもので "
+            "(例: Status は status)、single select の値は選択肢名の文字列です。"
+            "totalCount が items の件数より大きい場合は切り詰められています "
+            "(続きを取得する手段はないため、query で絞り込んでください)。"
+            "0件の場合は items が空配列になります。"
+            "gh のトークンに project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "project_number": {
+                    "type": "integer",
+                    "description": "プロジェクト番号",
+                    "minimum": 1
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得する最大件数（未指定時は30）",
+                    "minimum": 1,
+                    "maximum": PROJECT_MAX_LIMIT
+                },
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Projects のフィルタ構文による絞り込み"
+                        "（例: status:\"In Progress\", -status:Done, assignee:octocat is:issue）"
+                    ),
+                    "minLength": 1
                 }
             },
             "required": ["owner", "project_number"]
@@ -1802,11 +1852,33 @@ def execute_gh_project_field_list(arguments: Dict[str, Any]) -> List[Dict[str, A
     return run_gh_tool(build_gh_project_field_list_args(arguments), "gh project field-list failed")
 
 
+def build_gh_project_item_list_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_item_list の gh コマンド引数を組み立てる
+
+    query は先頭がハイフンの値 (例: -status:Done) を取りうるため、
+    --query の値として独立した argv 要素で渡す。
+    """
+    limit = arguments.get("limit", PROJECT_DEFAULT_LIMIT)
+    args = ["project", "item-list", str(arguments["project_number"]), "--owner", arguments["owner"],
+            "--limit", str(limit), "--format", "json", "--jq", PROJECT_ITEM_LIST_JQ]
+
+    if "query" in arguments:
+        args.extend(["--query", arguments["query"]])
+
+    return args
+
+
+def execute_gh_project_item_list(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_item_list ツールの実行"""
+    return run_gh_tool(build_gh_project_item_list_args(arguments), "gh project item-list failed")
+
+
 # owner とプロジェクト番号で対象を指定するツールの実行関数
 # 実行関数は (arguments) を受け取る
 PROJECT_TOOL_EXECUTORS = {
     "gh_project_list": execute_gh_project_list,
     "gh_project_field_list": execute_gh_project_field_list,
+    "gh_project_item_list": execute_gh_project_item_list,
 }
 
 

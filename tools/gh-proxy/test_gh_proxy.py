@@ -258,7 +258,7 @@ class ExecuteToolDispatchTest(unittest.TestCase):
     def test_プロジェクト指定ツールがディスパッチ表に登録されている(self):
         self.assertEqual(
             set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys()),
-            {"gh_project_list", "gh_project_field_list"},
+            {"gh_project_list", "gh_project_field_list", "gh_project_item_list"},
         )
 
     def test_TOOLSの全ツールがgit系ツールかいずれかのディスパッチ表に登録されている(self):
@@ -1620,6 +1620,66 @@ class GhProjectFieldListSchemaValidationTest(unittest.TestCase):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_arguments(
                 "gh_project_field_list", {**self.BASE_ARGUMENTS, "limit": 101})
+
+
+PROJECT_ITEM_LIST_JQ = (
+    "{totalCount, items: [.items[] | "
+    "if .content == null then . else .content |= del(.body) end]}"
+)
+
+
+class BuildGhProjectItemListArgsTest(unittest.TestCase):
+    """gh_project_item_list の gh コマンド引数組み立てのテスト"""
+
+    def test_任意引数なしの場合は30件指定とJSON形式とbodyを除くjq式を含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_item_list_args({"owner": "octocat", "project_number": 1}),
+            ["project", "item-list", "1", "--owner", "octocat", "--limit", "30",
+             "--format", "json", "--jq", PROJECT_ITEM_LIST_JQ],
+        )
+
+    def test_limitとqueryを指定すると件数とqueryオプションを付加する(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_item_list_args(
+                {"owner": "octocat", "project_number": 1, "limit": 100,
+                 "query": 'status:"In Progress"'}),
+            ["project", "item-list", "1", "--owner", "octocat", "--limit", "100",
+             "--format", "json", "--jq", PROJECT_ITEM_LIST_JQ,
+             "--query", 'status:"In Progress"'],
+        )
+
+    def test_queryが先頭ハイフンでもqueryオプションの値のargv要素として組み立てる(self):
+        args = gh_proxy.build_gh_project_item_list_args(
+            {"owner": "octocat", "project_number": 1, "query": "-status:Done"})
+
+        self.assertEqual(args[-2:], ["--query", "-status:Done"])
+
+
+class GhProjectItemListSchemaValidationTest(unittest.TestCase):
+    """gh_project_item_list の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {"owner": "octocat", "project_number": 1}
+
+    def test_必須引数のみの場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_item_list", dict(self.BASE_ARGUMENTS))
+
+    def test_limitとqueryを指定しても例外にならない(self):
+        gh_proxy.validate_arguments(
+            "gh_project_item_list", {**self.BASE_ARGUMENTS, "limit": 100, "query": "-status:Done"})
+
+    def test_project_numberが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_list", {"owner": "octocat"})
+
+    def test_limitが上限100を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_list", {**self.BASE_ARGUMENTS, "limit": 101})
+
+    def test_queryが空文字だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_list", {**self.BASE_ARGUMENTS, "query": ""})
 
 
 if __name__ == "__main__":
