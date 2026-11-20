@@ -237,7 +237,8 @@ class ExecuteToolDispatchTest(unittest.TestCase):
             set(gh_proxy.REPO_TOOL_EXECUTORS.keys()),
             {"gh_repo_view", "gh_pr_list", "gh_pr_view", "gh_issue_list",
              "gh_issue_view", "gh_pr_comments", "gh_issue_comments",
-             "gh_pr_create", "gh_label_list"},
+             "gh_pr_create", "gh_label_list", "gh_pr_run_list", "gh_run_job_list",
+             "gh_run_job_log"},
         )
 
 
@@ -1029,6 +1030,459 @@ class GitSyncDefaultBranchTest(unittest.TestCase):
 
             with self.assertRaises(gh_proxy.ToolExecutionError):
                 self._sync(origin_dir)
+
+
+RUN_LIST_JSON_FIELDS = (
+    "attempt,conclusion,createdAt,databaseId,displayTitle,event,headBranch,headSha,"
+    "name,number,startedAt,status,updatedAt,url,workflowDatabaseId,workflowName"
+)
+
+PR_HEAD_STDOUT = (
+    '{"headRefName":"feature/new-api","headRefOid":"1e76f68a3951acb095c0b50b47def7833f46ab90",'
+    '"isCrossRepository":false}\n'
+)
+
+PR_HEAD = {
+    "headRefName": "feature/new-api",
+    "headRefOid": "1e76f68a3951acb095c0b50b47def7833f46ab90",
+    "isCrossRepository": False,
+}
+
+
+class BuildGhPrRunListArgsTest(unittest.TestCase):
+    """gh_pr_run_list の gh コマンド引数組み立てのテスト"""
+
+    def test_PRのhead情報取得の引数リストは文字列化したPR番号とhead関連の3フィールドを含む(self):
+        self.assertEqual(
+            gh_proxy.build_gh_pr_head_args("octocat/hello-world", 123),
+            ["pr", "view", "123", "--repo", "octocat/hello-world", "--json",
+             "headRefName,headRefOid,isCrossRepository"],
+        )
+
+    def test_run一覧取得で任意引数なしの場合はブランチ指定と取得件数20を付加する(self):
+        self.assertEqual(
+            gh_proxy.build_gh_run_list_args("octocat/hello-world", "feature/new-api", {}),
+            ["run", "list", "--repo", "octocat/hello-world", "--branch", "feature/new-api",
+             "--limit", "20", "--json", RUN_LIST_JSON_FIELDS],
+        )
+
+    def test_run一覧取得でlimitとworkflowを指定すると対応するオプションを付加する(self):
+        arguments = {"limit": 5, "workflow": "ci.yml"}
+        self.assertEqual(
+            gh_proxy.build_gh_run_list_args("octocat/hello-world", "feature/new-api", arguments),
+            ["run", "list", "--repo", "octocat/hello-world", "--branch", "feature/new-api",
+             "--limit", "5", "--json", RUN_LIST_JSON_FIELDS, "--workflow", "ci.yml"],
+        )
+
+    def test_先頭ハイフンのブランチ名もbranchオプションの値のargv要素として組み立てる(self):
+        args = gh_proxy.build_gh_run_list_args("octocat/hello-world", "-x", {})
+        self.assertEqual(args[args.index("--branch") + 1], "-x")
+
+
+class ParsePrHeadTest(unittest.TestCase):
+    """gh pr view の head 情報の解釈のテスト"""
+
+    def test_headRefNameとheadRefOidとisCrossRepositoryを取り出す(self):
+        self.assertEqual(gh_proxy.parse_pr_head(PR_HEAD_STDOUT), PR_HEAD)
+
+    def test_3フィールド以外のフィールドは結果に含めない(self):
+        stdout = (
+            '{"headRefName":"main","headRefOid":"abc","isCrossRepository":true,"title":"x"}'
+        )
+        self.assertEqual(
+            gh_proxy.parse_pr_head(stdout),
+            {"headRefName": "main", "headRefOid": "abc", "isCrossRepository": True},
+        )
+
+    def test_JSONとして解釈できない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_pr_head("not json")
+
+    def test_トップレベルがオブジェクトでない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_pr_head("[]")
+
+    def test_headRefNameが空文字の出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_pr_head(
+                '{"headRefName":"","headRefOid":"abc","isCrossRepository":false}')
+
+    def test_headRefOidが文字列でない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_pr_head(
+                '{"headRefName":"main","headRefOid":null,"isCrossRepository":false}')
+
+    def test_isCrossRepositoryが真偽値でない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.parse_pr_head(
+                '{"headRefName":"main","headRefOid":"abc","isCrossRepository":"false"}')
+
+
+class FormatPrRunListTest(unittest.TestCase):
+    """gh_pr_run_list の返却 JSON 組み立てのテスト"""
+
+    def test_PRのhead情報とrunの配列を1つのオブジェクトにまとめる(self):
+        run_list_stdout = '[{"databaseId":1,"headSha":"abc","workflowName":"CI"}]\n'
+        self.assertEqual(
+            gh_proxy.format_pr_run_list(PR_HEAD, run_list_stdout),
+            '{"pullRequest":{"headRefName":"feature/new-api",'
+            '"headRefOid":"1e76f68a3951acb095c0b50b47def7833f46ab90","isCrossRepository":false},'
+            '"runs":[{"databaseId":1,"headSha":"abc","workflowName":"CI"}]}',
+        )
+
+    def test_run一覧が空配列の出力の場合はrunsを空配列にする(self):
+        self.assertTrue(gh_proxy.format_pr_run_list(PR_HEAD, "[]\n").endswith(',"runs":[]}'))
+
+    def test_run一覧の出力が空文字列の場合はrunsを空配列にする(self):
+        self.assertTrue(gh_proxy.format_pr_run_list(PR_HEAD, "").endswith(',"runs":[]}'))
+
+    def test_非ASCIIのdisplayTitleをエスケープせずに出力する(self):
+        self.assertIn(
+            "日予算",
+            gh_proxy.format_pr_run_list(PR_HEAD, '[{"displayTitle":"日予算"}]'),
+        )
+
+    def test_run一覧がJSONとして解釈できない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_pr_run_list(PR_HEAD, "not json")
+
+    def test_run一覧のトップレベルが配列でない出力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_pr_run_list(PR_HEAD, "{}")
+
+
+class FetchPrRunListTest(unittest.TestCase):
+    """gh の実行関数を差し替えた gh_pr_run_list の合成処理のテスト"""
+
+    def _recording_run_gh(self, results):
+        """呼び出された引数リストを記録し、results を先頭から順に返す gh の実行関数を作る"""
+        calls = []
+        remaining = list(results)
+
+        def run_gh(args):
+            calls.append(args)
+            return remaining.pop(0)
+
+        return run_gh, calls
+
+    def test_PRのheadブランチ名でrun一覧を取得して結果をまとめる(self):
+        run_gh, calls = self._recording_run_gh([
+            (PR_HEAD_STDOUT, "", 0),
+            ('[{"databaseId":1}]\n', "", 0),
+        ])
+
+        text = gh_proxy.fetch_pr_run_list("octocat/hello-world", {"number": 123}, run_gh)
+
+        self.assertEqual(calls, [
+            gh_proxy.build_gh_pr_head_args("octocat/hello-world", 123),
+            gh_proxy.build_gh_run_list_args("octocat/hello-world", "feature/new-api", {"number": 123}),
+        ])
+        self.assertEqual(text, gh_proxy.format_pr_run_list(PR_HEAD, '[{"databaseId":1}]'))
+
+    def test_PRのhead情報取得が失敗した場合はrun一覧を取得せずToolExecutionErrorになる(self):
+        run_gh, calls = self._recording_run_gh([("", "no pull requests found", 1)])
+
+        with self.assertRaises(gh_proxy.ToolExecutionError) as context:
+            gh_proxy.fetch_pr_run_list("octocat/hello-world", {"number": 123}, run_gh)
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("no pull requests found", str(context.exception))
+
+    def test_run一覧取得が失敗した場合はstderrを含むToolExecutionErrorになる(self):
+        run_gh, calls = self._recording_run_gh([
+            (PR_HEAD_STDOUT, "", 0),
+            ("", "could not find any workflows named ci.yml", 1),
+        ])
+
+        with self.assertRaises(gh_proxy.ToolExecutionError) as context:
+            gh_proxy.fetch_pr_run_list("octocat/hello-world", {"number": 123}, run_gh)
+
+        self.assertIn("could not find any workflows named ci.yml", str(context.exception))
+
+
+class GhPrRunListSchemaValidationTest(unittest.TestCase):
+    """gh_pr_run_list の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {"owner": "octocat", "repository_name": "hello-world", "number": 123}
+
+    def test_必須引数のみの場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_pr_run_list", dict(self.BASE_ARGUMENTS))
+
+    def test_limitとworkflowを指定しても例外にならない(self):
+        gh_proxy.validate_arguments(
+            "gh_pr_run_list", {**self.BASE_ARGUMENTS, "limit": 100, "workflow": "ci.yml"})
+
+    def test_numberが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_pr_run_list", {"owner": "octocat", "repository_name": "hello-world"})
+
+    def test_limitが上限100を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_pr_run_list", {**self.BASE_ARGUMENTS, "limit": 101})
+
+    def test_limitが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_pr_run_list", {**self.BASE_ARGUMENTS, "limit": 0})
+
+    def test_workflowが空文字だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_pr_run_list", {**self.BASE_ARGUMENTS, "workflow": ""})
+
+
+class BuildGhRunJobListArgsTest(unittest.TestCase):
+    """gh_run_job_list の gh コマンド引数組み立てのテスト"""
+
+    def test_job一覧取得の引数リストはrunのjobsエンドポイントと100件指定とフィールド絞り込みを含む(self):
+        self.assertEqual(
+            gh_proxy.build_gh_run_job_list_args("octocat/hello-world", 44665981074),
+            ["api", "repos/octocat/hello-world/actions/runs/44665981074/jobs?per_page=100",
+             "--jq",
+             "{total_count, jobs: [.jobs[] | {id, name, status, conclusion, started_at, "
+             "completed_at, html_url, steps: [.steps[]? | {number, name, status, conclusion, "
+             "started_at, completed_at}]}]}"],
+        )
+
+
+class GhRunJobListSchemaValidationTest(unittest.TestCase):
+    """gh_run_job_list の引数バリデーションのテスト"""
+
+    def test_ownerとrepository_nameとrun_idが揃っていれば例外にならない(self):
+        gh_proxy.validate_arguments(
+            "gh_run_job_list",
+            {"owner": "octocat", "repository_name": "hello-world", "run_id": 44665981074})
+
+    def test_run_idが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_run_job_list", {"owner": "octocat", "repository_name": "hello-world"})
+
+    def test_run_idが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_run_job_list",
+                {"owner": "octocat", "repository_name": "hello-world", "run_id": 0})
+
+    def test_run_idが文字列だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_run_job_list",
+                {"owner": "octocat", "repository_name": "hello-world", "run_id": "44665981074"})
+
+
+class BuildGhJobLogArgsTest(unittest.TestCase):
+    """gh_run_job_log の gh コマンド引数組み立てのテスト"""
+
+    def test_step_numberなしの場合はjobのlogsエンドポイントをエスケープシーケンス許可付きで呼ぶ(self):
+        self.assertEqual(
+            gh_proxy.build_gh_job_log_args("octocat/hello-world", 136055310860, None),
+            ["api", "--allow-escape-sequences",
+             "repos/octocat/hello-world/actions/jobs/136055310860/logs"],
+        )
+
+    def test_step_numberありの場合はstepのlogsエンドポイントをエスケープシーケンス許可付きで呼ぶ(self):
+        self.assertEqual(
+            gh_proxy.build_gh_job_log_args("octocat/hello-world", 136055310860, 14),
+            ["api", "--allow-escape-sequences",
+             "repos/octocat/hello-world/actions/jobs/136055310860/steps/14/logs"],
+        )
+
+
+class SplitLogLinesTest(unittest.TestCase):
+    """ログ本文の行分割のテスト"""
+
+    def test_空文字列は0行になる(self):
+        self.assertEqual(gh_proxy.split_log_lines(""), [])
+
+    def test_BOMのみの入力は0行になる(self):
+        self.assertEqual(gh_proxy.split_log_lines("﻿"), [])
+
+    def test_末尾に改行がある場合は末尾の空行を数えない(self):
+        self.assertEqual(gh_proxy.split_log_lines("a\nb\n"), ["a", "b"])
+
+    def test_末尾に改行がない場合も最終行を1行として数える(self):
+        self.assertEqual(gh_proxy.split_log_lines("a\nb"), ["a", "b"])
+
+    def test_末尾の改行は1つだけ除き残りの空行は行として数える(self):
+        self.assertEqual(gh_proxy.split_log_lines("a\n\n"), ["a", ""])
+
+    def test_改行1つだけの入力は空行1行になる(self):
+        self.assertEqual(gh_proxy.split_log_lines("\n"), [""])
+
+    def test_先頭のBOMを除去する(self):
+        self.assertEqual(gh_proxy.split_log_lines("﻿a\nb\n"), ["a", "b"])
+
+    def test_行の途中のBOMは除去しない(self):
+        self.assertEqual(gh_proxy.split_log_lines("a\n﻿b\n"), ["a", "﻿b"])
+
+    def test_U2028と垂直タブとフォームフィードでは行を分割しない(self):
+        self.assertEqual(
+            gh_proxy.split_log_lines("a b\x0bc\x0cd\n"),
+            ["a b\x0bc\x0cd"],
+        )
+
+
+class ValidateLogRangeArgumentsTest(unittest.TestCase):
+    """ログの取得範囲指定の組み合わせ検証のテスト"""
+
+    def test_範囲指定なしは例外にならない(self):
+        gh_proxy.validate_log_range_arguments({})
+
+    def test_offsetとlimitの同時指定は例外にならない(self):
+        gh_proxy.validate_log_range_arguments({"offset": 10, "limit": 20})
+
+    def test_tailのみの指定は例外にならない(self):
+        gh_proxy.validate_log_range_arguments({"tail": 100})
+
+    def test_tailとoffsetの同時指定はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_log_range_arguments({"tail": 100, "offset": 0})
+
+    def test_tailとlimitの同時指定はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_log_range_arguments({"tail": 100, "limit": 10})
+
+
+class ResolveLogRangeTest(unittest.TestCase):
+    """ログの取得範囲 (開始行と行数) の決定のテスト"""
+
+    def test_範囲指定なしの場合は先頭から500行になる(self):
+        self.assertEqual(gh_proxy.resolve_log_range(5750, {}), (0, 500))
+
+    def test_offsetとlimitを指定するとその値が開始行と行数になる(self):
+        self.assertEqual(gh_proxy.resolve_log_range(5750, {"offset": 1000, "limit": 200}), (1000, 200))
+
+    def test_offsetのみ指定すると行数は500行になる(self):
+        self.assertEqual(gh_proxy.resolve_log_range(5750, {"offset": 1000}), (1000, 500))
+
+    def test_limitのみ指定すると開始行は先頭になる(self):
+        self.assertEqual(gh_proxy.resolve_log_range(5750, {"limit": 50}), (0, 50))
+
+    def test_tailを指定すると開始行は総行数からtailを引いた行になる(self):
+        self.assertEqual(gh_proxy.resolve_log_range(5750, {"tail": 100}), (5650, 100))
+
+    def test_tailが総行数より大きい場合は開始行が先頭になる(self):
+        self.assertEqual(gh_proxy.resolve_log_range(49, {"tail": 100}), (0, 100))
+
+    def test_tailとoffsetの同時指定はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.resolve_log_range(5750, {"tail": 100, "offset": 0})
+
+
+class FormatLogPageTest(unittest.TestCase):
+    """ログの返却 JSON 組み立てのテスト"""
+
+    LINES = ["l0", "l1", "l2", "l3", "l4"]
+
+    def test_続きがある場合はnextOffsetが次の開始行になる(self):
+        self.assertEqual(
+            gh_proxy.format_log_page(self.LINES, 1, 2),
+            '{"totalLines":5,"offset":1,"returnedLines":2,"nextOffset":3,"log":"l1\\nl2"}',
+        )
+
+    def test_最終行まで返した場合はnextOffsetがnullになる(self):
+        self.assertEqual(
+            gh_proxy.format_log_page(self.LINES, 3, 2),
+            '{"totalLines":5,"offset":3,"returnedLines":2,"nextOffset":null,"log":"l3\\nl4"}',
+        )
+
+    def test_行数が残りの行数より大きい場合は残りの行だけを返す(self):
+        self.assertEqual(
+            gh_proxy.format_log_page(self.LINES, 3, 500),
+            '{"totalLines":5,"offset":3,"returnedLines":2,"nextOffset":null,"log":"l3\\nl4"}',
+        )
+
+    def test_開始行が総行数以上の場合は0行を返す(self):
+        self.assertEqual(
+            gh_proxy.format_log_page(self.LINES, 5, 10),
+            '{"totalLines":5,"offset":5,"returnedLines":0,"nextOffset":null,"log":""}',
+        )
+
+    def test_0行のログは0行を返す(self):
+        self.assertEqual(
+            gh_proxy.format_log_page([], 0, 500),
+            '{"totalLines":0,"offset":0,"returnedLines":0,"nextOffset":null,"log":""}',
+        )
+
+    def test_非ASCIIの文字をエスケープせずに出力する(self):
+        self.assertIn("日予算", gh_proxy.format_log_page(["日予算"], 0, 1))
+
+    def test_エスケープシーケンスのESCはJSONのユニコードエスケープとして出力する(self):
+        self.assertIn("\\u001b[31m", gh_proxy.format_log_page(["\x1b[31mred"], 0, 1))
+
+
+class RenderJobLogPageTest(unittest.TestCase):
+    """gh の出力したログ本文から返却 JSON までの変換のテスト"""
+
+    LOG_TEXT = "﻿" + "".join(f"line{index}\n" for index in range(10))
+
+    def test_BOM付きのログを行分割してoffsetとlimitの範囲を返す(self):
+        self.assertEqual(
+            gh_proxy.render_job_log_page(self.LOG_TEXT, {"offset": 2, "limit": 3}),
+            '{"totalLines":10,"offset":2,"returnedLines":3,"nextOffset":5,'
+            '"log":"line2\\nline3\\nline4"}',
+        )
+
+    def test_tailを指定すると末尾の行を返しoffsetに実際の開始行が入る(self):
+        self.assertEqual(
+            gh_proxy.render_job_log_page(self.LOG_TEXT, {"tail": 2}),
+            '{"totalLines":10,"offset":8,"returnedLines":2,"nextOffset":null,'
+            '"log":"line8\\nline9"}',
+        )
+
+
+class GhRunJobLogSchemaValidationTest(unittest.TestCase):
+    """gh_run_job_log の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {"owner": "octocat", "repository_name": "hello-world", "job_id": 136055310860}
+
+    def test_必須引数のみの場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_run_job_log", dict(self.BASE_ARGUMENTS))
+
+    def test_step_numberとoffsetとlimitを指定しても例外にならない(self):
+        gh_proxy.validate_arguments(
+            "gh_run_job_log",
+            {**self.BASE_ARGUMENTS, "step_number": 14, "offset": 0, "limit": 2000})
+
+    def test_tailを指定しても例外にならない(self):
+        gh_proxy.validate_arguments("gh_run_job_log", {**self.BASE_ARGUMENTS, "tail": 2000})
+
+    def test_job_idが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_run_job_log", {"owner": "octocat", "repository_name": "hello-world"})
+
+    def test_step_numberが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_run_job_log", {**self.BASE_ARGUMENTS, "step_number": 0})
+
+    def test_offsetが負だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_run_job_log", {**self.BASE_ARGUMENTS, "offset": -1})
+
+    def test_limitが上限2000を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_run_job_log", {**self.BASE_ARGUMENTS, "limit": 2001})
+
+    def test_tailが上限2000を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_run_job_log", {**self.BASE_ARGUMENTS, "tail": 2001})
+
+    def test_tailが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_run_job_log", {**self.BASE_ARGUMENTS, "tail": 0})
+
+
+class ExecuteGhRunJobLogValidationTest(unittest.TestCase):
+    """gh_run_job_log の実行前の範囲指定検証のテスト"""
+
+    def test_tailとoffsetを同時に指定するとghを実行する前にValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.execute_tool(
+                "gh_run_job_log",
+                {"owner": "octocat", "repository_name": "hello-world",
+                 "job_id": 136055310860, "tail": 10, "offset": 0},
+            )
 
 
 if __name__ == "__main__":
