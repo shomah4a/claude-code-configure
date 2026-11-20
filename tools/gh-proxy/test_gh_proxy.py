@@ -206,6 +206,20 @@ class ValidateArgumentsTest(unittest.TestCase):
                 {"owner": "octocat", "repository_name": "hello-world", "limit": 101},
             )
 
+    def test_ownerの末尾に改行があるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_repo_view",
+                {"owner": "octocat\n", "repository_name": "hello-world"},
+            )
+
+    def test_repository_nameの末尾に改行があるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_repo_view",
+                {"owner": "octocat", "repository_name": "hello-world\n"},
+            )
+
     def test_stateが列挙値以外だとValidationErrorになる(self):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_arguments(
@@ -276,6 +290,10 @@ class BranchNameValidationTest(unittest.TestCase):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_branch_name("", "branch")
 
+    def test_末尾に改行があるブランチ名はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_name("main\n", "branch")
+
 
 class RepositoryPathValidationTest(unittest.TestCase):
     """validate_repository_path のテスト"""
@@ -325,6 +343,10 @@ class GitPushSchemaValidationTest(unittest.TestCase):
     def test_branchが先頭ハイフンだとValidationErrorになる(self):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_arguments("git_push", {"path": "/home/user/repo", "branch": "--force"})
+
+    def test_branchの末尾に改行があるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("git_push", {"path": "/home/user/repo", "branch": "main\n"})
 
     def test_pathが欠けているとValidationErrorになる(self):
         with self.assertRaises(gh_proxy.ValidationError):

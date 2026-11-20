@@ -59,9 +59,14 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
+# パターンの末尾は $ ではなく \Z とする
+# Python の $ は文字列末尾の改行の直前にも一致し、末尾が改行の値を通してしまうため
+OWNER_PATTERN = "^[a-zA-Z0-9][a-zA-Z0-9-]*\\Z"
+REPOSITORY_NAME_PATTERN = "^[a-zA-Z0-9._-]+\\Z"
+
 # ブランチ名の許可パターン
 # 先頭の - / : / + を拒否することで、オプション注入・削除refspec・force refspecを防ぐ
-BRANCH_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+BRANCH_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._/-]*\\Z"
 
 # 進行中の git 操作を示す gitdir 内のパス
 # これらが存在する状態でブランチを切り替えると、進行中の操作の状態が壊れる
@@ -85,12 +90,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 }
             },
             "required": ["owner", "repository_name"]
@@ -105,12 +110,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "state": {
                     "type": "string",
@@ -140,12 +145,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -165,12 +170,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "state": {
                     "type": "string",
@@ -200,12 +205,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "limit": {
                     "type": "integer",
@@ -230,12 +235,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -255,12 +260,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -280,12 +285,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -305,12 +310,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "branch": {
                     "type": "string",
@@ -410,12 +415,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -455,12 +460,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "run_id": {
                     "type": "integer",
@@ -493,12 +498,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "job_id": {
                     "type": "integer",
