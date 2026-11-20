@@ -497,6 +497,53 @@ tag は `fetch.pruneTags` 設定の有無によらず削除しないよう `--no
 }
 ```
 
+### 13. gh_pr_run_list
+
+指定されたPull Requestのheadブランチに対する GitHub Actions の workflow run 一覧を取得します。
+
+**引数:**
+- `owner` (必須): リポジトリのオーナー名
+- `repository_name` (必須): リポジトリ名
+- `number` (必須): PR番号
+- `limit` (任意): 取得する最大件数（1-100）。未指定時は20
+- `workflow` (任意): 絞り込む workflow の名前またはファイル名（例: `CI`, `ci.yml`）
+
+`gh run list` には PR 番号で絞り込む手段がないため、`gh pr view` で PR の head ブランチ名を取得し、
+`gh run list --branch` でそのブランチの run を取得します（gh を2回実行します）。
+
+**返却フィールド:**
+- `pullRequest`: PR の head ブランチ情報
+  - `headRefName`: PR の元ブランチ名
+  - `headRefOid`: PR の現在の head コミットの SHA
+  - `isCrossRepository`: fork から作られた PR の場合 `true`
+- `runs`: `gh run list --json` の出力（run の配列）。0件の場合は空配列
+  - `attempt`, `conclusion`, `createdAt`, `databaseId`, `displayTitle`, `event`, `headBranch`, `headSha`,
+    `name`, `number`, `startedAt`, `status`, `updatedAt`, `url`, `workflowDatabaseId`, `workflowName`
+  - `databaseId` が run ID です
+
+**注意事項:**
+- ブランチ名で絞り込むため、PR の現在の head コミット以外に対する run も含まれます。
+  現在の head コミットに対する run かどうかは、run の `headSha` と `pullRequest.headRefOid` を比較して判別してください
+  - 過去の push に対する run
+  - 同じブランチの `push` イベントなど、`pull_request` 以外のイベントで起動した run
+  - fork 由来の PR（`isCrossRepository` が `true`）の場合、元リポジトリの同名ブランチに対する run
+- `pull_request_target` や `workflow_run` など、base 側のブランチに紐づいて起動する run は含まれない可能性があります（未検証）
+- 総件数は返らないため、run が `limit` を超えて存在する場合に切り詰められているかどうかは出力から判別できません
+- gh を2回実行するため、タイムアウトまでの時間は最大で `GH_PROXY_TIMEOUT` の2倍になります
+
+**例:**
+```json
+{
+  "name": "gh_pr_run_list",
+  "arguments": {
+    "owner": "anthropics",
+    "repository_name": "anthropic-sdk-python",
+    "number": 123,
+    "limit": 10
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -506,6 +553,7 @@ tag は `fetch.pruneTags` 設定の有無によらず削除しないよう `--no
 - Pull Requestの取得（一覧/詳細/コメント）
 - Issueの取得（一覧/詳細/コメント）
 - ラベル一覧の取得
+- GitHub Actions の workflow run 一覧の取得（Pull Request 単位）
 
 加えて、以下の書き込み操作を提供します：
 - ブランチのpush（git_push）: remote は origin 固定。force push・ブランチ削除・オプション指定は不可。

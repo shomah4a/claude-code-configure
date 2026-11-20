@@ -24,6 +24,14 @@ TIMEOUT = int(os.environ.get('GH_PROXY_TIMEOUT', '30'))
 PROTOCOL_VERSION = "2024-11-05"
 # gh_label_list で limit 未指定時に取得する件数 (gh の既定 30 件より多く取得するため明示する)
 LABEL_LIST_DEFAULT_LIMIT = 100
+# gh_pr_run_list で limit 未指定時に取得する件数 (gh run list の既定と同じ値を明示する)
+RUN_LIST_DEFAULT_LIMIT = 20
+RUN_LIST_MAX_LIMIT = 100
+# gh run list --json で取得するフィールド (gh 2.97.0 時点で指定できる全フィールド)
+RUN_LIST_JSON_FIELDS = (
+    "attempt,conclusion,createdAt,databaseId,displayTitle,event,headBranch,headSha,"
+    "name,number,startedAt,status,updatedAt,url,workflowDatabaseId,workflowName"
+)
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
@@ -369,6 +377,50 @@ TOOLS = [
             },
             "required": ["path"]
         }
+    },
+    {
+        "name": "gh_pr_run_list",
+        "description": (
+            "指定されたPull Requestのheadブランチに対するGitHub Actionsのworkflow run一覧を取得します。"
+            "pullRequest (headRefName, headRefOid, isCrossRepository) と runs (run の配列) を返します。"
+            "run の databaseId が run ID です。"
+            "ブランチ名で絞り込むため、過去の push に対する run と、同名ブランチに対する別の run "
+            "(push イベントの run、fork 由来の PR の場合は元リポジトリの同名ブランチの run) も含まれます。"
+            "現在の head コミットに対する run かどうかは、run の headSha と pullRequest.headRefOid を比較して判別できます。"
+            "0件の場合は runs が空配列になります"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "リポジトリのオーナー名",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                },
+                "repository_name": {
+                    "type": "string",
+                    "description": "リポジトリ名",
+                    "pattern": "^[a-zA-Z0-9._-]+$"
+                },
+                "number": {
+                    "type": "integer",
+                    "description": "PR番号",
+                    "minimum": 1
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得する最大件数（未指定時は20）",
+                    "minimum": 1,
+                    "maximum": RUN_LIST_MAX_LIMIT
+                },
+                "workflow": {
+                    "type": "string",
+                    "description": "絞り込む workflow の名前またはファイル名（例: CI, ci.yml）",
+                    "minLength": 1
+                }
+            },
+            "required": ["owner", "repository_name", "number"]
+        }
     }
 ]
 
@@ -706,6 +758,109 @@ def execute_gh_pr_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict[st
 def execute_gh_issue_comments(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_issue_comments ツールの実行"""
     return run_gh_tool(build_gh_issue_comments_args(repo, arguments["number"]), "gh issue view failed")
+
+
+def build_gh_pr_head_args(repo: str, number: int) -> List[str]:
+    """PR の head ブランチ情報取得の gh コマンド引数を組み立てる"""
+    return ["pr", "view", str(number), "--repo", repo, "--json", "headRefName,headRefOid,isCrossRepository"]
+
+
+def build_gh_run_list_args(repo: str, head_ref_name: str, arguments: Dict[str, Any]) -> List[str]:
+    """gh_pr_run_list の run 一覧取得の gh コマンド引数を組み立てる
+
+    head_ref_name は gh の出力値であり任意の文字を含みうるため、
+    --branch の値として独立した argv 要素で渡す。
+    """
+    limit = arguments.get("limit", RUN_LIST_DEFAULT_LIMIT)
+    args = ["run", "list", "--repo", repo, "--branch", head_ref_name,
+            "--limit", str(limit), "--json", RUN_LIST_JSON_FIELDS]
+
+    if "workflow" in arguments:
+        args.extend(["--workflow", arguments["workflow"]])
+
+    return args
+
+
+def parse_pr_head(stdout: str) -> Dict[str, Any]:
+    """gh pr view の JSON 出力から head ブランチ情報を取り出す"""
+    try:
+        pr = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise ToolExecutionError(f"gh の出力を JSON として解釈できませんでした: {e}")
+
+    if not isinstance(pr, dict):
+        raise ToolExecutionError("gh の出力がオブジェクトではありません")
+
+    head_ref_name = pr.get("headRefName")
+    if not isinstance(head_ref_name, str) or not head_ref_name:
+        raise ToolExecutionError("PR の headRefName が空でない文字列ではありません")
+
+    head_ref_oid = pr.get("headRefOid")
+    if not isinstance(head_ref_oid, str):
+        raise ToolExecutionError("PR の headRefOid が文字列ではありません")
+
+    is_cross_repository = pr.get("isCrossRepository")
+    if not isinstance(is_cross_repository, bool):
+        raise ToolExecutionError("PR の isCrossRepository が真偽値ではありません")
+
+    return {
+        "headRefName": head_ref_name,
+        "headRefOid": head_ref_oid,
+        "isCrossRepository": is_cross_repository,
+    }
+
+
+def format_pr_run_list(pr_head: Dict[str, Any], run_list_stdout: str) -> str:
+    """PR の head ブランチ情報と gh run list の JSON 出力から返却 JSON を組み立てる"""
+    try:
+        runs = json.loads(empty_stdout_as_empty_array(run_list_stdout))
+    except json.JSONDecodeError as e:
+        raise ToolExecutionError(f"gh の出力を JSON として解釈できませんでした: {e}")
+
+    if not isinstance(runs, list):
+        raise ToolExecutionError("gh の出力が配列ではありません")
+
+    return json.dumps(
+        {"pullRequest": pr_head, "runs": runs},
+        ensure_ascii=False,
+        separators=JSON_COMPACT_SEPARATORS
+    )
+
+
+def fetch_pr_run_list(repo: str, arguments: Dict[str, Any],
+                      run_gh: Callable[[List[str]], Tuple[str, str, int]]) -> str:
+    """
+    PR の head ブランチに対する workflow run 一覧を取得する
+
+    Args:
+        repo: owner/repository_name 形式のリポジトリ
+        arguments: ツール引数
+        run_gh: gh コマンド引数を受け取り (stdout, stderr, return_code) を返す関数
+
+    gh の呼び出しは副作用であるため、外部から注入する。
+    """
+    stdout, stderr, code = run_gh(build_gh_pr_head_args(repo, arguments["number"]))
+    if code != 0:
+        raise ToolExecutionError(f"gh pr view failed: {stderr}")
+
+    try:
+        pr_head = parse_pr_head(stdout)
+    except ToolExecutionError as e:
+        raise ToolExecutionError(f"gh pr view failed: {e}")
+
+    stdout, stderr, code = run_gh(build_gh_run_list_args(repo, pr_head["headRefName"], arguments))
+    if code != 0:
+        raise ToolExecutionError(f"gh run list failed: {stderr}")
+
+    try:
+        return format_pr_run_list(pr_head, stdout)
+    except ToolExecutionError as e:
+        raise ToolExecutionError(f"gh run list failed: {e}")
+
+
+def execute_gh_pr_run_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_pr_run_list ツールの実行"""
+    return [{"type": "text", "text": fetch_pr_run_list(repo, arguments, execute_gh_command)}]
 
 
 def build_gh_default_branch_args(repo: str) -> List[str]:
@@ -1347,6 +1502,7 @@ REPO_TOOL_EXECUTORS = {
     "gh_issue_comments": execute_gh_issue_comments,
     "gh_pr_create": execute_gh_pr_create,
     "gh_label_list": execute_gh_label_list,
+    "gh_pr_run_list": execute_gh_pr_run_list,
 }
 
 
