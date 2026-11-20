@@ -175,7 +175,7 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
   `title` と `state` は含まれないため、必要な場合は `number` を用いて gh_issue_view を追加実行してください。
   `totalCount` や次ページの有無を示す情報は付かないため、紐付け件数が多い場合に切り詰められているかどうかは出力から判別できません
 
-本文中の `#123` 形式の単なる言及や timeline の cross-reference は含まれません。
+本文中の `#123` 形式の単なる言及や timeline の cross-reference は含まれません（他の issue / Pull Request からの言及は gh_issue_references で取得できます）。
 
 **例:**
 ```json
@@ -255,7 +255,7 @@ Docker環境の場合、`host.docker.internal` を使用することでホスト
 `subIssues`, `blockedBy`, `blocking` は `{ "nodes": [...], "totalCount": N }` の形状です。
 各ノードおよび `parent` には `id`, `number`, `title`, `url`, `state`, `repository.nameWithOwner` が含まれます。
 サブIssueが多いIssueではレスポンスサイズが大きくなります。
-本文中の `#123` 形式の単なる言及や timeline の cross-reference は含まれません。
+本文中の `#123` 形式の単なる言及や timeline の cross-reference は含まれません（他の issue / Pull Request からの言及は gh_issue_references で取得できます）。
 
 **例:**
 ```json
@@ -853,6 +853,68 @@ iteration のフィールドが持つ iteration の一覧は含まれません�
 }
 ```
 
+### 21. gh_issue_references
+
+指定された issue または Pull Request を参照している（本文やコメントで言及している）issue と Pull Request の一覧を取得します。
+別のリポジトリからの言及も含みます。
+
+**引数:**
+- `owner` (必須): リポジトリのオーナー名
+- `repository_name` (必須): リポジトリ名
+- `number` (必須): 参照される側の issue または Pull Request の番号
+- `limit` (任意): 取得する最大件数（1-100）。未指定時は30
+
+`gh api graphql` で、対象の `timelineItems` を `CROSS_REFERENCED_EVENT` に絞り込んで取得し、参照元ごとの情報に整形して返します。
+このサーバーで GraphQL を使うのは、このツールのみです。
+
+**返却フィールド:**
+- `targetType`: `number` で指定した対象の種別。`Issue` または `PullRequest`
+- `totalCount`: GitHub の GraphQL API が返す `totalCount` の値（下記の注意事項を参照）
+- `references`: 参照元の配列。古い順。0件の場合は空配列
+  - `type`: 参照元の種別。`Issue` または `PullRequest`
+  - `number`, `title`, `url`: 参照元の番号・タイトル・URL
+  - `state`: 参照元の状態。issue は `OPEN` / `CLOSED`、Pull Request は `OPEN` / `CLOSED` / `MERGED`
+  - `repository`: 参照元のリポジトリ（`owner/name` 形式）
+  - `isCrossRepository`: 参照元が、対象とは別のリポジトリにある場合 `true`
+  - `willCloseTarget`: 参照元がマージされたときに対象がクローズされる場合 `true`
+  - `referencedAt`: 言及された日時
+  - `actor`: 言及したユーザーの login。取得できない場合（削除されたユーザーなど）は `null`
+
+参照元の本文は含みません。必要な場合は gh_issue_view / gh_pr_view を利用してください。
+
+**含まれないもの:**
+- コミットメッセージからの参照
+- Development 欄で手動リンクされた Pull Request（gh_issue_view の `closedByPullRequestsReferences` で取得できます）
+- コメント、ラベルの変更、クローズなど、タイムラインの他のイベント
+
+**注意事項:**
+- `totalCount` の意味は、対象の種別によって異なります（gh 2.103.3 での実測）
+  - 対象が issue の場合: 言及の総数です。`references` の件数より大きい場合は切り詰められています
+  - 対象が Pull Request の場合: 言及の件数と一致しない値になります。言及が0件の Pull Request で `12` や `17` が返ることを確認しています。
+    絞り込みを指定しない場合に返るイベントの件数とも一致せず、何を数えた値かは分かっていません。
+    Pull Request では `totalCount` を件数や切り詰めの判定に使わないでください。
+    このため Pull Request では、言及が `limit` を超えていても、切り詰められているかどうかを返却から判別できません。
+    `references` の件数が `limit` と同じ場合は、切り詰められている可能性があります
+- 続きを取得する手段はありません。`limit` の上限が100のため、言及が101件以上ある場合は、新しい側の言及を取得できません
+- GitHub がエラーを返した場合は、取得できた分を返さず、全体がエラーになります。
+  応答に `null` の参照元が含まれる場合も、除外せずエラーにします。
+  参照元にアクセスできないリポジトリのものが含まれる場合にどうなるかは確認できていません
+- 存在しないリポジトリを指定するとエラーになります（`gh: Could not resolve to a Repository with the name '...'.`）。
+  存在しない番号を指定した場合の挙動は確認できていません
+- 同じ参照元が複数回現れるかどうかは確認できていません。重複の除去は行いません
+
+**例:**
+```json
+{
+  "name": "gh_issue_references",
+  "arguments": {
+    "owner": "octocat",
+    "repository_name": "hello-world",
+    "number": 23
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -868,6 +930,7 @@ iteration のフィールドが持つ iteration の一覧は含まれません�
 - GitHub Projects のプロジェクト一覧の取得
 - GitHub Projects のフィールド一覧の取得
 - GitHub Projects のアイテムとフィールド値の一覧の取得
+- issue / Pull Request を参照している issue / Pull Request の一覧の取得
 
 gh_run_job_log が返すログ本文は、workflow の出力そのものです。以下の点を考慮してください。
 - ログには、GitHub がマスクしなかった機微な値（トークン、接続文字列、個人情報など）が含まれる可能性があり、

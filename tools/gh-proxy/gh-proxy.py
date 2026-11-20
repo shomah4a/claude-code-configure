@@ -5,7 +5,7 @@ GitHub CLI MCP Proxy Server
 Model Context Protocol (MCP) サーバーとして動作し、
 GitHub CLI (gh) / git コマンドへの操作を提供します。
 readonly操作 (リポジトリ / Pull Request / Issue / ラベル / GitHub Actions の実行結果とログ /
-GitHub Projects のプロジェクト・フィールド・アイテムの取得) に加え、
+GitHub Projects のプロジェクト・フィールド・アイテム / issue・Pull Request への言及の取得) に加え、
 git push、Pull Request 作成、GitHub Projects へのアイテム追加とフィールド値の更新の書き込み操作を提供します。
 
 このサーバーはHTTP経由でJSON-RPC 2.0メッセージを受け取り、
@@ -61,10 +61,59 @@ PROJECT_ITEM_LIST_JQ = (
 )
 # gh project item-add / item-edit の出力から body を除く jq 式
 PROJECT_ITEM_JQ = "del(.body)"
+# gh_issue_references で limit 未指定時に取得する件数と上限 (GraphQL の first の上限)
+ISSUE_REFERENCES_DEFAULT_LIMIT = 30
+ISSUE_REFERENCES_MAX_LIMIT = 100
+# gh_issue_references の GraphQL クエリ
+# issue と Pull Request では timelineItems の itemTypes の型が異なるため、
+# 別名を付けて両方を問い合わせ、応答の __typename に応じて読み分ける
+ISSUE_REFERENCES_QUERY = """\
+query($owner: String!, $name: String!, $number: Int!, $first: Int!) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue {
+        issueTimelineItems: timelineItems(first: $first, itemTypes: [CROSS_REFERENCED_EVENT]) {
+          totalCount
+          nodes { ...CrossReference }
+        }
+      }
+      ... on PullRequest {
+        pullRequestTimelineItems: timelineItems(first: $first, itemTypes: [CROSS_REFERENCED_EVENT]) {
+          totalCount
+          nodes { ...CrossReference }
+        }
+      }
+    }
+  }
+}
+
+fragment CrossReference on CrossReferencedEvent {
+  referencedAt
+  isCrossRepository
+  willCloseTarget
+  actor { login }
+  source {
+    __typename
+    ... on Issue { number title state url repository { nameWithOwner } }
+    ... on PullRequest { number title state url repository { nameWithOwner } }
+  }
+}"""
+# gh_issue_references の対象の種別 (__typename) と、その timelineItems に付けた別名の対応
+ISSUE_REFERENCES_TIMELINE_KEYS = {
+    "Issue": "issueTimelineItems",
+    "PullRequest": "pullRequestTimelineItems",
+}
+# 参照元として扱う種別 (__typename)
+REFERENCE_SOURCE_TYPES = ("Issue", "PullRequest")
+# 参照元から取り出す必須フィールド
+REFERENCE_SOURCE_REQUIRED_FIELDS = ("number", "title", "state", "url")
+# cross-reference のイベントから取り出す必須フィールド
+CROSS_REFERENCE_REQUIRED_FIELDS = ("referencedAt", "isCrossRepository", "willCloseTarget")
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.11.0"
+SERVER_VERSION = "1.12.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
@@ -745,6 +794,56 @@ TOOLS = [
                 }
             },
             "required": ["owner", "project_number", "url", "field", "value"]
+        }
+    },
+    {
+        "name": "gh_issue_references",
+        "description": (
+            "指定された issue または Pull Request を参照している (本文やコメントで言及している) "
+            "issue と Pull Request の一覧を取得します。別のリポジトリからの言及も含みます。"
+            "targetType (指定した番号の種別。Issue / PullRequest)、totalCount、"
+            "references (type, number, title, state, url, repository, isCrossRepository, "
+            "willCloseTarget, referencedAt, actor) を返します。references は古い順で、"
+            "参照元の本文は含みません。0件の場合は references が空配列になります。"
+            "コミットメッセージからの参照と、Development 欄で手動リンクされた Pull Request は含みません "
+            "(後者は gh_issue_view の closedByPullRequestsReferences で取得できます)。"
+            "totalCount は GitHub の GraphQL API が返す値をそのまま返します。"
+            "対象が issue の場合は言及の総数で、references の件数より大きければ切り詰められています "
+            "(続きを取得する手段はありません)。"
+            "対象が Pull Request の場合、totalCount は言及の件数と一致しない値になります "
+            "(言及が0件の Pull Request で 12 や 17 が返ることを確認しています)。"
+            "Pull Request では totalCount を件数や切り詰めの判定に使わないでください。"
+            "Pull Request では切り詰められているかどうかを返却から判別できず、"
+            "references の件数が limit と同じ場合は切り詰められている可能性があります。"
+            "参照元にアクセスできないものが含まれるなどで GitHub がエラーを返した場合は、"
+            "取得できた分を返さず、全体がエラーになります"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "リポジトリのオーナー名",
+                    "pattern": OWNER_PATTERN
+                },
+                "repository_name": {
+                    "type": "string",
+                    "description": "リポジトリ名",
+                    "pattern": REPOSITORY_NAME_PATTERN
+                },
+                "number": {
+                    "type": "integer",
+                    "description": "参照される側の issue または Pull Request の番号",
+                    "minimum": 1
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得する最大件数（未指定時は30）",
+                    "minimum": 1,
+                    "maximum": ISSUE_REFERENCES_MAX_LIMIT
+                }
+            },
+            "required": ["owner", "repository_name", "number"]
         }
     }
 ]
@@ -1923,6 +2022,130 @@ def execute_git_sync_default_branch(arguments: Dict[str, Any]) -> List[Dict[str,
     return [{"type": "text", "text": output}]
 
 
+def build_gh_issue_references_args(owner: str, repository_name: str, arguments: Dict[str, Any]) -> List[str]:
+    """gh_issue_references の gh コマンド引数を組み立てる
+
+    owner と name は -f (文字列) で渡す。-F は数字だけの値を整数に変換し、
+    @ で始まる値をファイルから読むため、文字列の変数には使わない。
+    number と first は検証済みの整数であり、GraphQL の Int として渡すため -F を使う。
+    """
+    limit = arguments.get("limit", ISSUE_REFERENCES_DEFAULT_LIMIT)
+    return [
+        "api", "graphql",
+        "-f", f"query={ISSUE_REFERENCES_QUERY}",
+        "-f", f"owner={owner}",
+        "-f", f"name={repository_name}",
+        "-F", f"number={arguments['number']}",
+        "-F", f"first={limit}",
+    ]
+
+
+def require_fields(value: Any, field_names: Tuple[str, ...], description: str) -> Dict[str, Any]:
+    """value がオブジェクトで、指定したフィールドをすべて持つことを検証して返す"""
+    if not isinstance(value, dict):
+        raise ToolExecutionError(f"{description} がオブジェクトではありません")
+
+    for field_name in field_names:
+        if field_name not in value:
+            raise ToolExecutionError(f"{description} に {field_name} がありません")
+
+    return value
+
+
+def reference_actor_login(actor: Any) -> Optional[str]:
+    """cross-reference のイベントの actor から login を取り出す
+
+    actor は GraphQL のスキーマ上 null になりうる (削除されたユーザーなど) ため、null はそのまま返す。
+    """
+    if actor is None:
+        return None
+
+    return require_fields(actor, ("login",), "参照の actor")["login"]
+
+
+def format_cross_reference(node: Any) -> Dict[str, Any]:
+    """GraphQL の CrossReferencedEvent ノードから、返却する参照元の情報を組み立てる
+
+    null のノードや null の参照元は、黙って除外せずエラーにする。
+    """
+    event = require_fields(node, CROSS_REFERENCE_REQUIRED_FIELDS + ("source",), "参照のノード")
+    source = require_fields(
+        event["source"], ("__typename", "repository") + REFERENCE_SOURCE_REQUIRED_FIELDS, "参照元")
+
+    if source["__typename"] not in REFERENCE_SOURCE_TYPES:
+        raise ToolExecutionError(f"参照元の種別が想定外です: {source['__typename']}")
+
+    repository = require_fields(source["repository"], ("nameWithOwner",), "参照元のリポジトリ")
+
+    return {
+        "type": source["__typename"],
+        "number": source["number"],
+        "title": source["title"],
+        "state": source["state"],
+        "url": source["url"],
+        "repository": repository["nameWithOwner"],
+        "isCrossRepository": event["isCrossRepository"],
+        "willCloseTarget": event["willCloseTarget"],
+        "referencedAt": event["referencedAt"],
+        "actor": reference_actor_login(event.get("actor")),
+    }
+
+
+def find_reference_target(response: Any) -> Dict[str, Any]:
+    """GraphQL の応答から、参照される側の issue / Pull Request のオブジェクトを取り出す"""
+    data = require_fields(response, ("data",), "gh の出力")
+    data = require_fields(data["data"], ("repository",), "応答の data")
+    repository = require_fields(data["repository"], ("issueOrPullRequest",), "応答の repository")
+    target = require_fields(
+        repository["issueOrPullRequest"], ("__typename",), "応答の issueOrPullRequest")
+
+    if target["__typename"] not in ISSUE_REFERENCES_TIMELINE_KEYS:
+        raise ToolExecutionError(f"対象の種別が想定外です: {target['__typename']}")
+
+    return target
+
+
+def format_issue_references(stdout: str) -> str:
+    """gh api graphql が出力した応答から、gh_issue_references の返却 JSON を組み立てる"""
+    try:
+        response = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise ToolExecutionError(f"gh の出力を JSON として解釈できませんでした: {e}")
+
+    target = find_reference_target(response)
+    target_type = target["__typename"]
+    timeline_key = ISSUE_REFERENCES_TIMELINE_KEYS[target_type]
+    timeline = require_fields(
+        target.get(timeline_key), ("totalCount", "nodes"), f"応答の {timeline_key}")
+
+    total_count = timeline["totalCount"]
+    # bool は int のサブクラスのため、整数として扱わない
+    if isinstance(total_count, bool) or not isinstance(total_count, int):
+        raise ToolExecutionError("totalCount が整数ではありません")
+
+    if not isinstance(timeline["nodes"], list):
+        raise ToolExecutionError("nodes が配列ではありません")
+
+    return json.dumps(
+        {
+            "targetType": target_type,
+            "totalCount": total_count,
+            "references": [format_cross_reference(node) for node in timeline["nodes"]],
+        },
+        ensure_ascii=False,
+        separators=JSON_COMPACT_SEPARATORS
+    )
+
+
+def execute_gh_issue_references(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_issue_references ツールの実行
+
+    GraphQL の変数には owner と name を別々に渡すため、結合済みの repo は使わない。
+    """
+    args = build_gh_issue_references_args(arguments["owner"], arguments["repository_name"], arguments)
+    return run_gh_tool(args, "gh issue references failed", format_issue_references)
+
+
 def build_gh_project_list_args(arguments: Dict[str, Any]) -> List[str]:
     """gh_project_list の gh コマンド引数を組み立てる"""
     limit = arguments.get("limit", PROJECT_DEFAULT_LIMIT)
@@ -2023,6 +2246,7 @@ REPO_TOOL_EXECUTORS = {
     "gh_pr_run_list": execute_gh_pr_run_list,
     "gh_run_job_list": execute_gh_run_job_list,
     "gh_run_job_log": execute_gh_run_job_log,
+    "gh_issue_references": execute_gh_issue_references,
 }
 
 

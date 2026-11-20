@@ -5,6 +5,7 @@
 """
 
 import importlib.util
+import json
 import os
 import tempfile
 import unittest
@@ -252,7 +253,7 @@ class ExecuteToolDispatchTest(unittest.TestCase):
             {"gh_repo_view", "gh_pr_list", "gh_pr_view", "gh_issue_list",
              "gh_issue_view", "gh_pr_comments", "gh_issue_comments",
              "gh_pr_create", "gh_label_list", "gh_pr_run_list", "gh_run_job_list",
-             "gh_run_job_log"},
+             "gh_run_job_log", "gh_issue_references"},
         )
 
     def test_プロジェクト指定ツールがディスパッチ表に登録されている(self):
@@ -1830,6 +1831,257 @@ class GhProjectItemEditSchemaValidationTest(unittest.TestCase):
             gh_proxy.validate_arguments(
                 "gh_project_item_edit",
                 {**self.BASE_ARGUMENTS, "url": "https://github.com/octocat/hello-world/issues/23\n"})
+
+
+class BuildGhIssueReferencesArgsTest(unittest.TestCase):
+    """gh_issue_references の gh コマンド引数組み立てのテスト"""
+
+    def test_limit未指定の場合はownerとnameを文字列フィールドでnumberと30件指定を型付きフィールドで渡す(self):
+        self.assertEqual(
+            gh_proxy.build_gh_issue_references_args("octocat", "hello-world", {"number": 23}),
+            ["api", "graphql",
+             "-f", f"query={gh_proxy.ISSUE_REFERENCES_QUERY}",
+             "-f", "owner=octocat",
+             "-f", "name=hello-world",
+             "-F", "number=23",
+             "-F", "first=30"],
+        )
+
+    def test_limitを指定するとその件数をfirstに渡す(self):
+        args = gh_proxy.build_gh_issue_references_args(
+            "octocat", "hello-world", {"number": 23, "limit": 100})
+
+        self.assertEqual(args[-2:], ["-F", "first=100"])
+
+    def test_数字だけのownerとリポジトリ名も文字列フィールドで渡す(self):
+        args = gh_proxy.build_gh_issue_references_args("123", "456", {"number": 23})
+
+        self.assertEqual(args[4:8], ["-f", "owner=123", "-f", "name=456"])
+
+    def test_クエリはissueとPullRequestの両方を解決しcross_referenceのみに絞り込む(self):
+        query = gh_proxy.ISSUE_REFERENCES_QUERY
+
+        self.assertIn("issueOrPullRequest(number: $number)", query)
+        self.assertIn(
+            "issueTimelineItems: timelineItems(first: $first, itemTypes: [CROSS_REFERENCED_EVENT])",
+            query)
+        self.assertIn(
+            "pullRequestTimelineItems: timelineItems(first: $first, itemTypes: [CROSS_REFERENCED_EVENT])",
+            query)
+
+
+def _cross_reference_node(source_type, number, repository, actor_login="octocat"):
+    """GraphQL の CrossReferencedEvent ノードを組み立てる"""
+    path_segment = "pull" if source_type == "PullRequest" else "issues"
+    return {
+        "referencedAt": "2026-11-10T08:39:07Z",
+        "isCrossRepository": repository != "octocat/hello-world",
+        "willCloseTarget": False,
+        "actor": {"login": actor_login} if actor_login is not None else None,
+        "source": {
+            "__typename": source_type,
+            "number": number,
+            "title": f"title of {number}",
+            "state": "OPEN",
+            "url": f"https://github.com/{repository}/{path_segment}/{number}",
+            "repository": {"nameWithOwner": repository},
+        },
+    }
+
+
+def _references_response(target_type, timeline_key, total_count, nodes):
+    """gh api graphql が出力する応答の JSON 文字列を組み立てる"""
+    return json.dumps({
+        "data": {
+            "repository": {
+                "issueOrPullRequest": {
+                    "__typename": target_type,
+                    timeline_key: {"totalCount": total_count, "nodes": nodes},
+                }
+            }
+        }
+    })
+
+
+class FormatIssueReferencesTest(unittest.TestCase):
+    """GraphQL の応答から gh_issue_references の返却 JSON を組み立てる処理のテスト"""
+
+    def test_対象がissueの応答から参照元のissueとPullRequestを取り出す(self):
+        stdout = _references_response("Issue", "issueTimelineItems", 2, [
+            _cross_reference_node("PullRequest", 12, "octocat/other-repo"),
+            _cross_reference_node("Issue", 34, "octocat/hello-world"),
+        ])
+
+        self.assertEqual(json.loads(gh_proxy.format_issue_references(stdout)), {
+            "targetType": "Issue",
+            "totalCount": 2,
+            "references": [
+                {
+                    "type": "PullRequest",
+                    "number": 12,
+                    "title": "title of 12",
+                    "state": "OPEN",
+                    "url": "https://github.com/octocat/other-repo/pull/12",
+                    "repository": "octocat/other-repo",
+                    "isCrossRepository": True,
+                    "willCloseTarget": False,
+                    "referencedAt": "2026-11-10T08:39:07Z",
+                    "actor": "octocat",
+                },
+                {
+                    "type": "Issue",
+                    "number": 34,
+                    "title": "title of 34",
+                    "state": "OPEN",
+                    "url": "https://github.com/octocat/hello-world/issues/34",
+                    "repository": "octocat/hello-world",
+                    "isCrossRepository": False,
+                    "willCloseTarget": False,
+                    "referencedAt": "2026-11-10T08:39:07Z",
+                    "actor": "octocat",
+                },
+            ],
+        })
+
+    def test_対象がPullRequestの応答はPullRequest用の別名から参照元を取り出す(self):
+        stdout = _references_response("PullRequest", "pullRequestTimelineItems", 1, [
+            _cross_reference_node("Issue", 34, "octocat/hello-world"),
+        ])
+
+        result = json.loads(gh_proxy.format_issue_references(stdout))
+
+        self.assertEqual(result["targetType"], "PullRequest")
+        self.assertEqual([reference["number"] for reference in result["references"]], [34])
+
+    def test_参照が0件の場合はreferencesが空配列になる(self):
+        stdout = _references_response("Issue", "issueTimelineItems", 0, [])
+
+        self.assertEqual(
+            json.loads(gh_proxy.format_issue_references(stdout)),
+            {"targetType": "Issue", "totalCount": 0, "references": []},
+        )
+
+    def test_totalCountはノードの件数と異なっていてもGraphQLの値をそのまま返す(self):
+        stdout = _references_response("PullRequest", "pullRequestTimelineItems", 17, [])
+
+        result = json.loads(gh_proxy.format_issue_references(stdout))
+
+        self.assertEqual(result["totalCount"], 17)
+        self.assertEqual(result["references"], [])
+
+    def test_actorがnullの参照はactorをnullとして返す(self):
+        stdout = _references_response("Issue", "issueTimelineItems", 1, [
+            _cross_reference_node("PullRequest", 12, "octocat/hello-world", actor_login=None),
+        ])
+
+        result = json.loads(gh_proxy.format_issue_references(stdout))
+
+        self.assertIsNone(result["references"][0]["actor"])
+
+    def test_日本語のタイトルをエスケープせずに出力する(self):
+        node = _cross_reference_node("Issue", 34, "octocat/hello-world")
+        node["source"]["title"] = "日本語のタイトル"
+        stdout = _references_response("Issue", "issueTimelineItems", 1, [node])
+
+        self.assertIn("日本語のタイトル", gh_proxy.format_issue_references(stdout))
+
+    def test_ノードがnullの場合はToolExecutionErrorになる(self):
+        stdout = _references_response("Issue", "issueTimelineItems", 1, [None])
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_sourceがnullの場合はToolExecutionErrorになる(self):
+        node = _cross_reference_node("Issue", 34, "octocat/hello-world")
+        node["source"] = None
+        stdout = _references_response("Issue", "issueTimelineItems", 1, [node])
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_参照元の種別がissueでもPullRequestでもない場合はToolExecutionErrorになる(self):
+        node = _cross_reference_node("Discussion", 34, "octocat/hello-world")
+        stdout = _references_response("Issue", "issueTimelineItems", 1, [node])
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_参照元にnumberがない場合はToolExecutionErrorになる(self):
+        node = _cross_reference_node("Issue", 34, "octocat/hello-world")
+        del node["source"]["number"]
+        stdout = _references_response("Issue", "issueTimelineItems", 1, [node])
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_issueOrPullRequestがnullの場合はToolExecutionErrorになる(self):
+        stdout = json.dumps({"data": {"repository": {"issueOrPullRequest": None}}})
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_repositoryがnullの場合はToolExecutionErrorになる(self):
+        stdout = json.dumps({"data": {"repository": None}})
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_対象の種別がissueでもPullRequestでもない場合はToolExecutionErrorになる(self):
+        stdout = _references_response("Discussion", "issueTimelineItems", 0, [])
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_対象の種別に対応する別名のtimelineItemsがない場合はToolExecutionErrorになる(self):
+        stdout = _references_response("PullRequest", "issueTimelineItems", 0, [])
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_totalCountが整数でない場合はToolExecutionErrorになる(self):
+        stdout = _references_response("Issue", "issueTimelineItems", None, [])
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_nodesが配列でない場合はToolExecutionErrorになる(self):
+        stdout = _references_response("Issue", "issueTimelineItems", 0, None)
+
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references(stdout)
+
+    def test_JSONでない入力はToolExecutionErrorになる(self):
+        with self.assertRaises(gh_proxy.ToolExecutionError):
+            gh_proxy.format_issue_references("not json")
+
+
+class GhIssueReferencesSchemaValidationTest(unittest.TestCase):
+    """gh_issue_references の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {"owner": "octocat", "repository_name": "hello-world", "number": 23}
+
+    def test_必須引数のみの場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_issue_references", dict(self.BASE_ARGUMENTS))
+
+    def test_limitが上限100の場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_issue_references", {**self.BASE_ARGUMENTS, "limit": 100})
+
+    def test_numberが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_issue_references", {"owner": "octocat", "repository_name": "hello-world"})
+
+    def test_numberが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_issue_references", {**self.BASE_ARGUMENTS, "number": 0})
+
+    def test_limitが上限100を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_issue_references", {**self.BASE_ARGUMENTS, "limit": 101})
+
+    def test_limitが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_issue_references", {**self.BASE_ARGUMENTS, "limit": 0})
 
 
 if __name__ == "__main__":
