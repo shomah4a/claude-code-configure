@@ -728,9 +728,9 @@ iteration のフィールドが持つ iteration の一覧は含まれません�
   - `id`: アイテムの ID
   - `content`: アイテムの内容
     - issue / Pull Request: `type`（`Issue` / `PullRequest`）, `title`, `number`, `repository`（`owner/name` 形式）, `url`
-    - draft issue: `type`（`DraftIssue`）, `title`
+    - draft issue: `type`（`DraftIssue`）, `title`, `id`（draft issue の ID。値がある場合のみ）
     - gh が種類を判別できないアイテムでは `null`
-  - フィールド値: フィールドごとに1つのキー。値が設定されていないフィールドのキーは含まれません
+  - フィールド値: フィールドごとに1つのキー
 
 **フィールド値のキー名と値:**
 - キー名は、フィールド名の先頭1文字のみを小文字にしたものです（gh の変換規則）。
