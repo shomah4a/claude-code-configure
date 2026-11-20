@@ -32,6 +32,14 @@ RUN_LIST_JSON_FIELDS = (
     "attempt,conclusion,createdAt,databaseId,displayTitle,event,headBranch,headSha,"
     "name,number,startedAt,status,updatedAt,url,workflowDatabaseId,workflowName"
 )
+# gh_run_job_list で 1 回に取得する job の件数 (REST API の per_page の上限)
+RUN_JOB_LIST_PER_PAGE = 100
+# gh_run_job_list で job / step から取り出すフィールドを絞り込む jq 式
+RUN_JOB_LIST_JQ = (
+    "{total_count, jobs: [.jobs[] | {id, name, status, conclusion, started_at, "
+    "completed_at, html_url, steps: [.steps[]? | {number, name, status, conclusion, "
+    "started_at, completed_at}]}]}"
+)
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
@@ -420,6 +428,40 @@ TOOLS = [
                 }
             },
             "required": ["owner", "repository_name", "number"]
+        }
+    },
+    {
+        "name": "gh_run_job_list",
+        "description": (
+            "指定された GitHub Actions の workflow run の job と step の一覧を取得します。"
+            "total_count (job の総数) と jobs (id, name, status, conclusion, started_at, completed_at, "
+            "html_url, steps) を返します。steps の各要素は number, name, status, conclusion, started_at, "
+            "completed_at を含みます。job の id が job ID で、step の number は連番とは限りません。"
+            "run の最新の attempt の job を返します。"
+            "取得するのは先頭100件までで、total_count が jobs の件数より大きい場合は切り詰められています "
+            "(続きを取得する手段はありません)。"
+            "run ID は gh_pr_run_list の runs の databaseId から得られます"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "リポジトリのオーナー名",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                },
+                "repository_name": {
+                    "type": "string",
+                    "description": "リポジトリ名",
+                    "pattern": "^[a-zA-Z0-9._-]+$"
+                },
+                "run_id": {
+                    "type": "integer",
+                    "description": "workflow run の ID",
+                    "minimum": 1
+                }
+            },
+            "required": ["owner", "repository_name", "run_id"]
         }
     }
 ]
@@ -861,6 +903,19 @@ def fetch_pr_run_list(repo: str, arguments: Dict[str, Any],
 def execute_gh_pr_run_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     """gh_pr_run_list ツールの実行"""
     return [{"type": "text", "text": fetch_pr_run_list(repo, arguments, execute_gh_command)}]
+
+
+def build_gh_run_job_list_args(repo: str, run_id: int) -> List[str]:
+    """gh_run_job_list の gh コマンド引数を組み立てる"""
+    return [
+        "api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page={RUN_JOB_LIST_PER_PAGE}",
+        "--jq", RUN_JOB_LIST_JQ,
+    ]
+
+
+def execute_gh_run_job_list(repo: str, arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_run_job_list ツールの実行"""
+    return run_gh_tool(build_gh_run_job_list_args(repo, arguments["run_id"]), "gh run job list failed")
 
 
 def build_gh_default_branch_args(repo: str) -> List[str]:
@@ -1503,6 +1558,7 @@ REPO_TOOL_EXECUTORS = {
     "gh_pr_create": execute_gh_pr_create,
     "gh_label_list": execute_gh_label_list,
     "gh_pr_run_list": execute_gh_pr_run_list,
+    "gh_run_job_list": execute_gh_run_job_list,
 }
 
 

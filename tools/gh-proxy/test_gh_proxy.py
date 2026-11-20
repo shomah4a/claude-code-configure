@@ -237,7 +237,7 @@ class ExecuteToolDispatchTest(unittest.TestCase):
             set(gh_proxy.REPO_TOOL_EXECUTORS.keys()),
             {"gh_repo_view", "gh_pr_list", "gh_pr_view", "gh_issue_list",
              "gh_issue_view", "gh_pr_comments", "gh_issue_comments",
-             "gh_pr_create", "gh_label_list", "gh_pr_run_list"},
+             "gh_pr_create", "gh_label_list", "gh_pr_run_list", "gh_run_job_list"},
         )
 
 
@@ -1227,6 +1227,46 @@ class GhPrRunListSchemaValidationTest(unittest.TestCase):
     def test_workflowが空文字だとValidationErrorになる(self):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_arguments("gh_pr_run_list", {**self.BASE_ARGUMENTS, "workflow": ""})
+
+
+class BuildGhRunJobListArgsTest(unittest.TestCase):
+    """gh_run_job_list の gh コマンド引数組み立てのテスト"""
+
+    def test_job一覧取得の引数リストはrunのjobsエンドポイントと100件指定とフィールド絞り込みを含む(self):
+        self.assertEqual(
+            gh_proxy.build_gh_run_job_list_args("octocat/hello-world", 44665981074),
+            ["api", "repos/octocat/hello-world/actions/runs/44665981074/jobs?per_page=100",
+             "--jq",
+             "{total_count, jobs: [.jobs[] | {id, name, status, conclusion, started_at, "
+             "completed_at, html_url, steps: [.steps[]? | {number, name, status, conclusion, "
+             "started_at, completed_at}]}]}"],
+        )
+
+
+class GhRunJobListSchemaValidationTest(unittest.TestCase):
+    """gh_run_job_list の引数バリデーションのテスト"""
+
+    def test_ownerとrepository_nameとrun_idが揃っていれば例外にならない(self):
+        gh_proxy.validate_arguments(
+            "gh_run_job_list",
+            {"owner": "octocat", "repository_name": "hello-world", "run_id": 44665981074})
+
+    def test_run_idが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_run_job_list", {"owner": "octocat", "repository_name": "hello-world"})
+
+    def test_run_idが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_run_job_list",
+                {"owner": "octocat", "repository_name": "hello-world", "run_id": 0})
+
+    def test_run_idが文字列だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_run_job_list",
+                {"owner": "octocat", "repository_name": "hello-world", "run_id": "44665981074"})
 
 
 if __name__ == "__main__":

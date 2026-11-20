@@ -544,6 +544,44 @@ tag は `fetch.pruneTags` 設定の有無によらず削除しないよう `--no
 }
 ```
 
+### 14. gh_run_job_list
+
+指定された GitHub Actions の workflow run の job と step の一覧を取得します。
+
+**引数:**
+- `owner` (必須): リポジトリのオーナー名
+- `repository_name` (必須): リポジトリ名
+- `run_id` (必須): workflow run の ID。gh_pr_run_list の `runs` の `databaseId` から得られます
+
+`gh api repos/{owner}/{repo}/actions/runs/{run_id}/jobs` の出力から、以下のフィールドを取り出して返します。
+REST API の出力を利用するため、フィールド名は snake_case です（gh_pr_run_list などの camelCase とは異なります）。
+
+**返却フィールド:**
+- `total_count`: run の job の総数
+- `jobs`: job の配列
+  - `id`: job ID。gh_run_job_log の `job_id` に指定します
+  - `name`, `status`, `conclusion`, `started_at`, `completed_at`, `html_url`
+  - `steps`: step の配列。skipped の job では空配列になります
+    - `number`: step 番号。gh_run_job_log の `step_number` に指定します。連番とは限りません（例: 8 の次が 14）
+    - `name`, `status`, `conclusion`, `started_at`, `completed_at`
+
+**注意事項:**
+- run の最新の attempt の job を返します。再実行前の attempt の job は含まれません
+- 取得するのは先頭100件までです。`total_count` が `jobs` の件数より大きい場合は切り詰められています。
+  続きを取得する手段はありません
+
+**例:**
+```json
+{
+  "name": "gh_run_job_list",
+  "arguments": {
+    "owner": "anthropics",
+    "repository_name": "anthropic-sdk-python",
+    "run_id": 44665981074
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -554,6 +592,7 @@ tag は `fetch.pruneTags` 設定の有無によらず削除しないよう `--no
 - Issueの取得（一覧/詳細/コメント）
 - ラベル一覧の取得
 - GitHub Actions の workflow run 一覧の取得（Pull Request 単位）
+- GitHub Actions の job / step 一覧の取得（workflow run 単位）
 
 加えて、以下の書き込み操作を提供します：
 - ブランチのpush（git_push）: remote は origin 固定。force push・ブランチ削除・オプション指定は不可。
