@@ -5,7 +5,7 @@ GitHub CLI MCP Proxy Server
 Model Context Protocol (MCP) サーバーとして動作し、
 GitHub CLI (gh) / git コマンドへの操作を提供します。
 readonly操作 (リポジトリ / Pull Request / Issue / ラベル / GitHub Actions の実行結果とログ /
-GitHub Projects のプロジェクト・フィールド・アイテムの取得) に加え、
+GitHub Projects のプロジェクト・フィールド・アイテム / issue・Pull Request への言及の取得) に加え、
 git push、Pull Request 作成、GitHub Projects へのアイテム追加とフィールド値の更新の書き込み操作を提供します。
 
 このサーバーはHTTP経由でJSON-RPC 2.0メッセージを受け取り、
@@ -113,7 +113,7 @@ CROSS_REFERENCE_REQUIRED_FIELDS = ("referencedAt", "isCrossRepository", "willClo
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.11.0"
+SERVER_VERSION = "1.12.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
