@@ -255,6 +255,27 @@ class ExecuteToolDispatchTest(unittest.TestCase):
              "gh_run_job_log"},
         )
 
+    def test_プロジェクト指定ツールがディスパッチ表に登録されている(self):
+        self.assertEqual(
+            set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys()),
+            {"gh_project_list"},
+        )
+
+    def test_TOOLSの全ツールがgit系ツールかいずれかのディスパッチ表に登録されている(self):
+        git_tool_names = {"git_push", "git_merge_default_branch", "git_sync_default_branch"}
+        self.assertEqual(
+            {tool["name"] for tool in gh_proxy.TOOLS},
+            git_tool_names
+            | set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys())
+            | set(gh_proxy.REPO_TOOL_EXECUTORS.keys()),
+        )
+
+    def test_プロジェクト指定ツールとリポジトリ指定ツールのディスパッチ表に重複がない(self):
+        self.assertEqual(
+            set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys()) & set(gh_proxy.REPO_TOOL_EXECUTORS.keys()),
+            set(),
+        )
+
 
 class BranchNameValidationTest(unittest.TestCase):
     """validate_branch_name のテスト"""
@@ -1505,6 +1526,55 @@ class ExecuteGhRunJobLogValidationTest(unittest.TestCase):
                 {"owner": "octocat", "repository_name": "hello-world",
                  "job_id": 136055310860, "tail": 10, "offset": 0},
             )
+
+
+class BuildGhProjectListArgsTest(unittest.TestCase):
+    """gh_project_list の gh コマンド引数組み立てのテスト"""
+
+    def test_limit未指定の場合は30件指定とJSON形式とreadmeを除くjq式を含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_list_args({"owner": "octocat"}),
+            ["project", "list", "--owner", "octocat", "--limit", "30", "--format", "json",
+             "--jq", "{totalCount, projects: [.projects[] | del(.readme)]}"],
+        )
+
+    def test_limitを指定するとその件数を文字列化して渡す(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_list_args({"owner": "octocat", "limit": 5}),
+            ["project", "list", "--owner", "octocat", "--limit", "5", "--format", "json",
+             "--jq", "{totalCount, projects: [.projects[] | del(.readme)]}"],
+        )
+
+
+class GhProjectListSchemaValidationTest(unittest.TestCase):
+    """gh_project_list の引数バリデーションのテスト"""
+
+    def test_ownerのみの場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_list", {"owner": "octocat"})
+
+    def test_limitが上限100の場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_list", {"owner": "octocat", "limit": 100})
+
+    def test_ownerが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_list", {})
+
+    def test_ownerがアットマーク付きのmeだとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_list", {"owner": "@me"})
+
+    def test_limitが上限100を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_list", {"owner": "octocat", "limit": 101})
+
+    def test_limitが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_list", {"owner": "octocat", "limit": 0})
+
+    def test_repository_nameを渡すとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_list", {"owner": "octocat", "repository_name": "hello-world"})
 
 
 if __name__ == "__main__":

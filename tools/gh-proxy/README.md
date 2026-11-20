@@ -49,6 +49,9 @@ gh auth login
 
 readonly ツールのみ利用する場合、認証トークンのスコープは `repo:read` または `public_repo` のみに制限することを推奨します。
 gh_pr_create を利用する場合は、対象リポジトリへの書き込みが可能なスコープ（`repo` 等）が必要です。
+gh_project_ で始まるツールを利用する場合は `project` スコープが必要です。`gh auth login` の既定のスコープには含まれないため、
+`gh auth refresh -s project` で追加してください。スコープがない場合、gh は
+`error: your authentication token is missing required scopes [read:project]` のエラーを返します。
 git_push は gh を利用せず、ホスト側の git の認証設定（credential helper 等）で push します。
 
 ### 3. サーバーの起動
@@ -640,6 +643,38 @@ REST API の出力を利用するため、フィールド名は snake_case で�
 }
 ```
 
+### 16. gh_project_list
+
+指定された owner の GitHub Projects の一覧を取得します。プロジェクト番号を調べるために使います。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）。`@me` は指定できません
+- `limit` (任意): 取得する最大件数（1-100）。未指定時は30
+
+`gh project list --owner <owner> --limit <n> --format json` の出力から、各プロジェクトの `readme` を除いて返します。
+
+**返却フィールド:**
+- `totalCount`: owner のプロジェクトの総数。closed のプロジェクトを含みます
+- `projects`: プロジェクトの配列。closed のプロジェクトは含みません
+  - `number`: プロジェクト番号。gh_project_ で始まる他のツールの `project_number` に指定します
+  - `title`, `url`, `shortDescription`, `public`, `closed`, `id`
+  - `items`, `fields`: それぞれ `{ "totalCount": N }` の形状
+  - `owner`: `{ "type", "login" }`。`type` は `User` または `Organization`
+
+**注意事項:**
+- gh は `limit` 件を取得してから closed のプロジェクトを除きます。このため `projects` の件数は `limit` より少なくなることがあります
+- closed のプロジェクトを取得する手段はありません
+
+**例:**
+```json
+{
+  "name": "gh_project_list",
+  "arguments": {
+    "owner": "octocat"
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -652,6 +687,7 @@ REST API の出力を利用するため、フィールド名は snake_case で�
 - GitHub Actions の workflow run 一覧の取得（Pull Request 単位）
 - GitHub Actions の job / step 一覧の取得（workflow run 単位）
 - GitHub Actions の job / step のログの取得
+- GitHub Projects のプロジェクト一覧の取得
 
 gh_run_job_log が返すログ本文は、workflow の出力そのものです。以下の点を考慮してください。
 - ログには、GitHub がマスクしなかった機微な値（トークン、接続文字列、個人情報など）が含まれる可能性があり、
@@ -710,6 +746,7 @@ git_sync_default_branch は、指定された `path` そのものではなく、
 GitHub認証トークンは利用するツールに応じて必要最小限のスコープに制限することを推奨します：
 - readonly ツールのみ利用する場合: `repo:read` または `public_repo`
 - gh_pr_create を利用する場合: 対象リポジトリへの書き込みが可能なスコープ（`repo` 等）
+- gh_project_ で始まるツールを利用する場合: `project`
 
 なお、git_push は gh を利用せず、ホスト側の git の認証設定（credential helper 等）を利用します。
 

@@ -47,6 +47,11 @@ JOB_LOG_DEFAULT_LIMIT_LINES = 500
 JOB_LOG_MAX_LIMIT_LINES = 2000
 # GitHub Actions のログ本文の先頭に付く BOM (UTF-8 としてデコードした後の文字)
 UTF8_BOM = "﻿"
+# gh project の一覧系ツールで limit 未指定時に取得する件数 (gh project の既定と同じ値を明示する) と上限
+PROJECT_DEFAULT_LIMIT = 30
+PROJECT_MAX_LIMIT = 100
+# gh_project_list で各プロジェクトから readme を除く jq 式
+PROJECT_LIST_JQ = "{totalCount, projects: [.projects[] | del(.readme)]}"
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
@@ -534,6 +539,34 @@ TOOLS = [
                 }
             },
             "required": ["owner", "repository_name", "job_id"]
+        }
+    },
+    {
+        "name": "gh_project_list",
+        "description": (
+            "指定された owner (user または organization) の GitHub Projects の一覧を取得します。"
+            "totalCount と projects (number, title, url, shortDescription, public, closed, id, "
+            "items, fields, owner) を返します。number がプロジェクト番号です。"
+            "closed のプロジェクトは含みません。totalCount は closed を含む総数で、"
+            "limit 件を取得してから closed を除くため、projects の件数は limit より少なくなることがあります。"
+            "gh のトークンに project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得する最大件数（未指定時は30）",
+                    "minimum": 1,
+                    "maximum": PROJECT_MAX_LIMIT
+                }
+            },
+            "required": ["owner"]
         }
     }
 ]
@@ -1712,6 +1745,25 @@ def execute_git_sync_default_branch(arguments: Dict[str, Any]) -> List[Dict[str,
     return [{"type": "text", "text": output}]
 
 
+def build_gh_project_list_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_list の gh コマンド引数を組み立てる"""
+    limit = arguments.get("limit", PROJECT_DEFAULT_LIMIT)
+    return ["project", "list", "--owner", arguments["owner"], "--limit", str(limit),
+            "--format", "json", "--jq", PROJECT_LIST_JQ]
+
+
+def execute_gh_project_list(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_list ツールの実行"""
+    return run_gh_tool(build_gh_project_list_args(arguments), "gh project list failed")
+
+
+# owner とプロジェクト番号で対象を指定するツールの実行関数
+# 実行関数は (arguments) を受け取る
+PROJECT_TOOL_EXECUTORS = {
+    "gh_project_list": execute_gh_project_list,
+}
+
+
 # owner/repository_name を引数に取るツールの実行関数
 # 実行関数は (repo, arguments) を受け取る
 REPO_TOOL_EXECUTORS = {
@@ -1749,6 +1801,10 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, An
 
     if tool_name == "git_sync_default_branch":
         return execute_git_sync_default_branch(arguments)
+
+    project_executor = PROJECT_TOOL_EXECUTORS.get(tool_name)
+    if project_executor is not None:
+        return project_executor(arguments)
 
     executor = REPO_TOOL_EXECUTORS.get(tool_name)
     if executor is None:
