@@ -5,7 +5,7 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 ## 概要
 
 このサーバーは、Claude CodeなどのMCPクライアントに対して、GitHubのreadonly操作と、
-一部の書き込み操作（git push、Pull Request作成、デフォルトブランチのマージ / 同期）を提供します。
+一部の書き込み操作（git push、Pull Request作成、デフォルトブランチのマージ / 同期、GitHub Projects へのアイテム追加）を提供します。
 ホスト側でサーバーを起動し、Dockerコンテナで動作するClaude Codeから HTTP経由でアクセスすることで、
 認証情報を渡すことなくGitHubを操作できます。
 
@@ -758,6 +758,48 @@ iteration のフィールドが持つ iteration の一覧は含まれません�
 }
 ```
 
+### 19. gh_project_item_add
+
+既存の issue または Pull Request を、指定されたプロジェクトにアイテムとして追加します。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）
+- `project_number` (必須): プロジェクト番号
+- `url` (必須): 追加する issue または Pull Request の URL。
+  `https://github.com/<owner>/<repo>/issues/<番号>` または `https://github.com/<owner>/<repo>/pull/<番号>` の形式のみ受け付けます
+
+`gh project item-add <project_number> --owner <owner> --url <url> --format json` の出力から `body` を除いて返します。
+
+**返却フィールド:**
+- `id`: 追加したアイテムの ID
+- `title`: issue / Pull Request のタイトル
+- `type`: `Issue` または `PullRequest`
+- `url`: issue / Pull Request の URL
+
+**動作:**
+- 追加済みの issue / Pull Request を指定した場合は、重複して追加されず、既存のアイテムと同じ `id` が返ります（エラーになりません）
+- issue / Pull Request のタイトル・本文・状態は変更しません。
+  GitHub の GraphQL API には、プロジェクトへの追加を表す issue / Pull Request のタイムラインイベント（`AddedToProjectV2Event`）が定義されています
+- プロジェクトの組み込み workflow が有効な場合、追加をきっかけに workflow が動きます（例: 「Item added to project」による Status の自動設定）
+
+**注意事項:**
+- 対象ホストは github.com のみです。gh は URL のホストではなく gh に設定されたホストの API を呼び出すため、
+  GitHub Enterprise Server の URL は受け付けません
+- 追加したアイテムをプロジェクトから外すツールはありません。誤って追加した場合は、GitHub の Web UI またはホスト上の gh で外してください
+- draft issue の作成はできません
+
+**例:**
+```json
+{
+  "name": "gh_project_item_add",
+  "arguments": {
+    "owner": "octocat",
+    "project_number": 1,
+    "url": "https://github.com/octocat/hello-world/issues/23"
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -792,6 +834,8 @@ gh_run_job_log が返すログ本文は、workflow の出力そのものです�
   デフォルトブランチの保護はリポジトリ側の branch protection / ruleset で行ってください。
   gh を利用しないため、origin が GitHub 以外の remote であっても push を実行します
 - Pull Request作成（gh_pr_create）
+- GitHub Projects へのアイテム追加（gh_project_item_add）: 既存の issue / Pull Request をプロジェクトに追加します。
+  gh のトークンで書き込めるすべてのプロジェクトが対象になります。追加したアイテムを外すツールは提供しません
 - デフォルトブランチのマージ（git_merge_default_branch）: ローカルリポジトリの作業ツリー・
   インデックス・HEAD を書き換える操作です
 - デフォルトブランチへの同期（git_sync_default_branch）: ローカルリポジトリの作業ツリー・
@@ -817,6 +861,7 @@ git_sync_default_branch は、指定された `path` そのものではなく、
   （パターンの末尾を `$` ではなく `\Z` としています。Python の `$` は末尾の改行の直前にも一致するためです）
 - リポジトリパス: 絶対パス・ディレクトリ存在・.git 存在の確認
 - PRタイトル: 空文字の拒否
+- issue / Pull Request の URL: 正規表現パターンマッチング。github.com の issue / Pull Request の URL のみ受け付け
 - 数値: 範囲チェック
 - 状態: 列挙値チェック
 

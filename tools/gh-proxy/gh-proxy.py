@@ -58,6 +58,8 @@ PROJECT_ITEM_LIST_JQ = (
     "{totalCount, items: [.items[] | "
     "if .content == null then . else .content |= del(.body) end]}"
 )
+# gh project item-add の出力から body を除く jq 式
+PROJECT_ITEM_JQ = "del(.body)"
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
@@ -74,6 +76,12 @@ INTERNAL_ERROR = -32603
 # Python の $ は文字列末尾の改行の直前にも一致し、末尾が改行の値を通してしまうため
 OWNER_PATTERN = "^[a-zA-Z0-9][a-zA-Z0-9-]*\\Z"
 REPOSITORY_NAME_PATTERN = "^[a-zA-Z0-9._-]+\\Z"
+
+# github.com の issue / Pull Request の URL の許可パターン
+# gh の API の送り先は URL のホストではなく gh に設定されたホストのため、対象を github.com に限る
+ISSUE_OR_PULL_REQUEST_URL_PATTERN = (
+    "^https://github\\.com/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+\\Z"
+)
 
 # ブランチ名の許可パターン
 # 先頭の - / : / + を拒否することで、オプション注入・削除refspec・force refspecを防ぐ
@@ -650,6 +658,42 @@ TOOLS = [
                 }
             },
             "required": ["owner", "project_number"]
+        }
+    },
+    {
+        "name": "gh_project_item_add",
+        "description": (
+            "既存の issue または Pull Request を、指定された GitHub Projects のプロジェクトにアイテムとして追加します。"
+            "追加したアイテムの id, title, type, url を返します。"
+            "追加済みの issue / Pull Request を指定した場合は、重複して追加されず、既存のアイテムが返ります。"
+            "issue / Pull Request 自体は変更されませんが、そのタイムラインに追加の記録が残り、"
+            "プロジェクトの workflow の設定によっては Status の自動設定などが行われます。"
+            "追加したアイテムをプロジェクトから外すツールはありません。"
+            "gh のトークンに project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "project_number": {
+                    "type": "integer",
+                    "description": "プロジェクト番号",
+                    "minimum": 1
+                },
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "追加する issue または Pull Request の URL"
+                        "（例: https://github.com/octocat/hello-world/issues/23）。github.com のみ対応"
+                    ),
+                    "pattern": ISSUE_OR_PULL_REQUEST_URL_PATTERN
+                }
+            },
+            "required": ["owner", "project_number", "url"]
         }
     }
 ]
@@ -1873,12 +1917,24 @@ def execute_gh_project_item_list(arguments: Dict[str, Any]) -> List[Dict[str, An
     return run_gh_tool(build_gh_project_item_list_args(arguments), "gh project item-list failed")
 
 
+def build_gh_project_item_add_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_item_add の gh コマンド引数を組み立てる"""
+    return ["project", "item-add", str(arguments["project_number"]), "--owner", arguments["owner"],
+            "--url", arguments["url"], "--format", "json", "--jq", PROJECT_ITEM_JQ]
+
+
+def execute_gh_project_item_add(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_item_add ツールの実行"""
+    return run_gh_tool(build_gh_project_item_add_args(arguments), "gh project item-add failed")
+
+
 # owner とプロジェクト番号で対象を指定するツールの実行関数
 # 実行関数は (arguments) を受け取る
 PROJECT_TOOL_EXECUTORS = {
     "gh_project_list": execute_gh_project_list,
     "gh_project_field_list": execute_gh_project_field_list,
     "gh_project_item_list": execute_gh_project_item_list,
+    "gh_project_item_add": execute_gh_project_item_add,
 }
 
 

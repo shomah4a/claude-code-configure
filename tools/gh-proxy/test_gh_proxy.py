@@ -258,7 +258,8 @@ class ExecuteToolDispatchTest(unittest.TestCase):
     def test_プロジェクト指定ツールがディスパッチ表に登録されている(self):
         self.assertEqual(
             set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys()),
-            {"gh_project_list", "gh_project_field_list", "gh_project_item_list"},
+            {"gh_project_list", "gh_project_field_list", "gh_project_item_list",
+             "gh_project_item_add"},
         )
 
     def test_TOOLSの全ツールがgit系ツールかいずれかのディスパッチ表に登録されている(self):
@@ -1680,6 +1681,71 @@ class GhProjectItemListSchemaValidationTest(unittest.TestCase):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_arguments(
                 "gh_project_item_list", {**self.BASE_ARGUMENTS, "query": ""})
+
+
+class BuildGhProjectItemAddArgsTest(unittest.TestCase):
+    """gh_project_item_add の gh コマンド引数組み立てのテスト"""
+
+    def test_プロジェクト番号とownerとurlとJSON形式とbodyを除くjq式を含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_item_add_args(
+                {"owner": "octocat", "project_number": 1,
+                 "url": "https://github.com/octocat/hello-world/issues/23"}),
+            ["project", "item-add", "1", "--owner", "octocat",
+             "--url", "https://github.com/octocat/hello-world/issues/23",
+             "--format", "json", "--jq", "del(.body)"],
+        )
+
+
+class GhProjectItemAddSchemaValidationTest(unittest.TestCase):
+    """gh_project_item_add の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {"owner": "octocat", "project_number": 1}
+
+    def _validate_with_url(self, url):
+        gh_proxy.validate_arguments("gh_project_item_add", {**self.BASE_ARGUMENTS, "url": url})
+
+    def test_issueのURLを受け入れる(self):
+        self._validate_with_url("https://github.com/octocat/hello-world/issues/23")
+
+    def test_PullRequestのURLを受け入れる(self):
+        self._validate_with_url("https://github.com/octocat/hello.world_2/pull/4")
+
+    def test_urlが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_add", dict(self.BASE_ARGUMENTS))
+
+    def test_github_com以外のホストのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://ghe.example.com/octocat/hello-world/issues/23")
+
+    def test_ホスト名がgithub_comで始まる別ホストのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com.example.com/octocat/hello-world/issues/23")
+
+    def test_httpスキームのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("http://github.com/octocat/hello-world/issues/23")
+
+    def test_プロジェクトのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com/users/octocat/projects/1")
+
+    def test_issue番号の後ろにパスが続くURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com/octocat/hello-world/issues/23/extra")
+
+    def test_クエリ文字列が付いたURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com/octocat/hello-world/issues/23?x=1")
+
+    def test_末尾に改行があるURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com/octocat/hello-world/issues/23\n")
+
+    def test_先頭がハイフンの値はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("--owner")
 
 
 if __name__ == "__main__":
