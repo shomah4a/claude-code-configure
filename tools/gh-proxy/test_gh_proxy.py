@@ -206,6 +206,20 @@ class ValidateArgumentsTest(unittest.TestCase):
                 {"owner": "octocat", "repository_name": "hello-world", "limit": 101},
             )
 
+    def test_ownerの末尾に改行があるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_repo_view",
+                {"owner": "octocat\n", "repository_name": "hello-world"},
+            )
+
+    def test_repository_nameの末尾に改行があるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_repo_view",
+                {"owner": "octocat", "repository_name": "hello-world\n"},
+            )
+
     def test_stateが列挙値以外だとValidationErrorになる(self):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_arguments(
@@ -239,6 +253,28 @@ class ExecuteToolDispatchTest(unittest.TestCase):
              "gh_issue_view", "gh_pr_comments", "gh_issue_comments",
              "gh_pr_create", "gh_label_list", "gh_pr_run_list", "gh_run_job_list",
              "gh_run_job_log"},
+        )
+
+    def test_プロジェクト指定ツールがディスパッチ表に登録されている(self):
+        self.assertEqual(
+            set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys()),
+            {"gh_project_list", "gh_project_field_list", "gh_project_item_list",
+             "gh_project_item_add", "gh_project_item_edit"},
+        )
+
+    def test_TOOLSの全ツールがgit系ツールかいずれかのディスパッチ表に登録されている(self):
+        git_tool_names = {"git_push", "git_merge_default_branch", "git_sync_default_branch"}
+        self.assertEqual(
+            {tool["name"] for tool in gh_proxy.TOOLS},
+            git_tool_names
+            | set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys())
+            | set(gh_proxy.REPO_TOOL_EXECUTORS.keys()),
+        )
+
+    def test_プロジェクト指定ツールとリポジトリ指定ツールのディスパッチ表に重複がない(self):
+        self.assertEqual(
+            set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys()) & set(gh_proxy.REPO_TOOL_EXECUTORS.keys()),
+            set(),
         )
 
 
@@ -275,6 +311,10 @@ class BranchNameValidationTest(unittest.TestCase):
     def test_空文字のブランチ名はValidationErrorになる(self):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_branch_name("", "branch")
+
+    def test_末尾に改行があるブランチ名はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_branch_name("main\n", "branch")
 
 
 class RepositoryPathValidationTest(unittest.TestCase):
@@ -325,6 +365,10 @@ class GitPushSchemaValidationTest(unittest.TestCase):
     def test_branchが先頭ハイフンだとValidationErrorになる(self):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_arguments("git_push", {"path": "/home/user/repo", "branch": "--force"})
+
+    def test_branchの末尾に改行があるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("git_push", {"path": "/home/user/repo", "branch": "main\n"})
 
     def test_pathが欠けているとValidationErrorになる(self):
         with self.assertRaises(gh_proxy.ValidationError):
@@ -1483,6 +1527,309 @@ class ExecuteGhRunJobLogValidationTest(unittest.TestCase):
                 {"owner": "octocat", "repository_name": "hello-world",
                  "job_id": 136055310860, "tail": 10, "offset": 0},
             )
+
+
+class BuildGhProjectListArgsTest(unittest.TestCase):
+    """gh_project_list の gh コマンド引数組み立てのテスト"""
+
+    def test_limit未指定の場合は30件指定とJSON形式とreadmeを除くjq式を含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_list_args({"owner": "octocat"}),
+            ["project", "list", "--owner", "octocat", "--limit", "30", "--format", "json",
+             "--jq", "{totalCount, projects: [.projects[] | del(.readme)]}"],
+        )
+
+    def test_limitを指定するとその件数を文字列化して渡す(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_list_args({"owner": "octocat", "limit": 5}),
+            ["project", "list", "--owner", "octocat", "--limit", "5", "--format", "json",
+             "--jq", "{totalCount, projects: [.projects[] | del(.readme)]}"],
+        )
+
+
+class GhProjectListSchemaValidationTest(unittest.TestCase):
+    """gh_project_list の引数バリデーションのテスト"""
+
+    def test_ownerのみの場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_list", {"owner": "octocat"})
+
+    def test_limitが上限100の場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_list", {"owner": "octocat", "limit": 100})
+
+    def test_ownerが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_list", {})
+
+    def test_ownerがアットマーク付きのmeだとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_list", {"owner": "@me"})
+
+    def test_limitが上限100を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_list", {"owner": "octocat", "limit": 101})
+
+    def test_limitが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_list", {"owner": "octocat", "limit": 0})
+
+    def test_repository_nameを渡すとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_list", {"owner": "octocat", "repository_name": "hello-world"})
+
+
+class BuildGhProjectFieldListArgsTest(unittest.TestCase):
+    """gh_project_field_list の gh コマンド引数組み立てのテスト"""
+
+    def test_limit未指定の場合は文字列化したプロジェクト番号と30件指定とJSON形式を含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_field_list_args({"owner": "octocat", "project_number": 1}),
+            ["project", "field-list", "1", "--owner", "octocat", "--limit", "30", "--format", "json"],
+        )
+
+    def test_limitを指定するとその件数を文字列化して渡す(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_field_list_args(
+                {"owner": "octocat", "project_number": 12, "limit": 100}),
+            ["project", "field-list", "12", "--owner", "octocat", "--limit", "100", "--format", "json"],
+        )
+
+
+class GhProjectFieldListSchemaValidationTest(unittest.TestCase):
+    """gh_project_field_list の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {"owner": "octocat", "project_number": 1}
+
+    def test_ownerとproject_numberが揃っていれば例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_field_list", dict(self.BASE_ARGUMENTS))
+
+    def test_project_numberが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_field_list", {"owner": "octocat"})
+
+    def test_project_numberが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_field_list", {"owner": "octocat", "project_number": 0})
+
+    def test_project_numberが文字列だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_field_list", {"owner": "octocat", "project_number": "1"})
+
+    def test_limitが上限100を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_field_list", {**self.BASE_ARGUMENTS, "limit": 101})
+
+
+PROJECT_ITEM_LIST_JQ = (
+    "{totalCount, items: [.items[] | "
+    "if .content == null then . else .content |= del(.body) end]}"
+)
+
+
+class BuildGhProjectItemListArgsTest(unittest.TestCase):
+    """gh_project_item_list の gh コマンド引数組み立てのテスト"""
+
+    def test_任意引数なしの場合は30件指定とJSON形式とbodyを除くjq式を含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_item_list_args({"owner": "octocat", "project_number": 1}),
+            ["project", "item-list", "1", "--owner", "octocat", "--limit", "30",
+             "--format", "json", "--jq", PROJECT_ITEM_LIST_JQ],
+        )
+
+    def test_limitとqueryを指定すると件数とqueryオプションを付加する(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_item_list_args(
+                {"owner": "octocat", "project_number": 1, "limit": 100,
+                 "query": 'status:"In Progress"'}),
+            ["project", "item-list", "1", "--owner", "octocat", "--limit", "100",
+             "--format", "json", "--jq", PROJECT_ITEM_LIST_JQ,
+             "--query", 'status:"In Progress"'],
+        )
+
+    def test_queryが先頭ハイフンでもqueryオプションの値のargv要素として組み立てる(self):
+        args = gh_proxy.build_gh_project_item_list_args(
+            {"owner": "octocat", "project_number": 1, "query": "-status:Done"})
+
+        self.assertEqual(args[-2:], ["--query", "-status:Done"])
+
+
+class GhProjectItemListSchemaValidationTest(unittest.TestCase):
+    """gh_project_item_list の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {"owner": "octocat", "project_number": 1}
+
+    def test_必須引数のみの場合は例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_item_list", dict(self.BASE_ARGUMENTS))
+
+    def test_limitとqueryを指定しても例外にならない(self):
+        gh_proxy.validate_arguments(
+            "gh_project_item_list", {**self.BASE_ARGUMENTS, "limit": 100, "query": "-status:Done"})
+
+    def test_project_numberが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_list", {"owner": "octocat"})
+
+    def test_limitが上限100を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_list", {**self.BASE_ARGUMENTS, "limit": 101})
+
+    def test_queryが空文字だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_list", {**self.BASE_ARGUMENTS, "query": ""})
+
+
+class BuildGhProjectItemAddArgsTest(unittest.TestCase):
+    """gh_project_item_add の gh コマンド引数組み立てのテスト"""
+
+    def test_プロジェクト番号とownerとurlとJSON形式とbodyを除くjq式を含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_item_add_args(
+                {"owner": "octocat", "project_number": 1,
+                 "url": "https://github.com/octocat/hello-world/issues/23"}),
+            ["project", "item-add", "1", "--owner", "octocat",
+             "--url", "https://github.com/octocat/hello-world/issues/23",
+             "--format", "json", "--jq", "del(.body)"],
+        )
+
+
+class GhProjectItemAddSchemaValidationTest(unittest.TestCase):
+    """gh_project_item_add の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {"owner": "octocat", "project_number": 1}
+
+    def _validate_with_url(self, url):
+        gh_proxy.validate_arguments("gh_project_item_add", {**self.BASE_ARGUMENTS, "url": url})
+
+    def test_issueのURLを受け入れる(self):
+        self._validate_with_url("https://github.com/octocat/hello-world/issues/23")
+
+    def test_PullRequestのURLを受け入れる(self):
+        self._validate_with_url("https://github.com/octocat/hello.world_2/pull/4")
+
+    def test_urlが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_add", dict(self.BASE_ARGUMENTS))
+
+    def test_github_com以外のホストのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://ghe.example.com/octocat/hello-world/issues/23")
+
+    def test_ホスト名がgithub_comで始まる別ホストのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com.example.com/octocat/hello-world/issues/23")
+
+    def test_httpスキームのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("http://github.com/octocat/hello-world/issues/23")
+
+    def test_プロジェクトのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com/users/octocat/projects/1")
+
+    def test_issue番号の後ろにパスが続くURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com/octocat/hello-world/issues/23/extra")
+
+    def test_クエリ文字列が付いたURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com/octocat/hello-world/issues/23?x=1")
+
+    def test_末尾に改行があるURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("https://github.com/octocat/hello-world/issues/23\n")
+
+    def test_先頭がハイフンの値はValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            self._validate_with_url("--owner")
+
+
+class BuildGhProjectItemEditArgsTest(unittest.TestCase):
+    """gh_project_item_edit の gh コマンド引数組み立てのテスト"""
+
+    BASE_ARGUMENTS = {
+        "owner": "octocat",
+        "project_number": 1,
+        "url": "https://github.com/octocat/hello-world/issues/23",
+    }
+
+    def test_urlとフィールド名と値を名前指定のオプションとして含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_item_edit_args(
+                {**self.BASE_ARGUMENTS, "field": "Status", "value": "In Progress"}),
+            ["project", "item-edit", "1", "--owner", "octocat",
+             "--url", "https://github.com/octocat/hello-world/issues/23",
+             "--field", "Status", "--value", "In Progress",
+             "--format", "json", "--jq", "del(.body)"],
+        )
+
+    def test_fieldとvalueが先頭ハイフンでもそれぞれのオプションの値のargv要素として組み立てる(self):
+        args = gh_proxy.build_gh_project_item_edit_args(
+            {**self.BASE_ARGUMENTS, "field": "--clear", "value": "--clear"})
+
+        self.assertEqual(args[args.index("--field") + 1], "--clear")
+        self.assertEqual(args[args.index("--value") + 1], "--clear")
+        self.assertEqual(args.count("--clear"), 2)
+
+
+class GhProjectItemEditSchemaValidationTest(unittest.TestCase):
+    """gh_project_item_edit の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {
+        "owner": "octocat",
+        "project_number": 1,
+        "url": "https://github.com/octocat/hello-world/issues/23",
+        "field": "Status",
+        "value": "In Progress",
+    }
+
+    def _arguments_without(self, field_name):
+        return {key: value for key, value in self.BASE_ARGUMENTS.items() if key != field_name}
+
+    def test_全引数が揃っていれば例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_item_edit", dict(self.BASE_ARGUMENTS))
+
+    def test_valueが先頭ハイフンでも例外にならない(self):
+        gh_proxy.validate_arguments(
+            "gh_project_item_edit", {**self.BASE_ARGUMENTS, "value": "--clear"})
+
+    def test_urlが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_edit", self._arguments_without("url"))
+
+    def test_fieldが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_edit", self._arguments_without("field"))
+
+    def test_valueが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_edit", self._arguments_without("value"))
+
+    def test_fieldが空文字だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_edit", {**self.BASE_ARGUMENTS, "field": ""})
+
+    def test_valueが空文字だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_edit", {**self.BASE_ARGUMENTS, "value": ""})
+
+    def test_github_com以外のホストのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_edit",
+                {**self.BASE_ARGUMENTS, "url": "https://ghe.example.com/octocat/hello-world/issues/23"})
+
+    def test_末尾に改行があるURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_edit",
+                {**self.BASE_ARGUMENTS, "url": "https://github.com/octocat/hello-world/issues/23\n"})
 
 
 if __name__ == "__main__":

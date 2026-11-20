@@ -4,8 +4,9 @@ GitHub CLI MCP Proxy Server
 
 Model Context Protocol (MCP) サーバーとして動作し、
 GitHub CLI (gh) / git コマンドへの操作を提供します。
-readonly操作 (リポジトリ / Pull Request / Issue / ラベル / GitHub Actions の実行結果とログの取得) に加え、
-git push と Pull Request 作成の書き込み操作を提供します。
+readonly操作 (リポジトリ / Pull Request / Issue / ラベル / GitHub Actions の実行結果とログ /
+GitHub Projects のプロジェクト・フィールド・アイテムの取得) に加え、
+git push、Pull Request 作成、GitHub Projects へのアイテム追加とフィールド値の更新の書き込み操作を提供します。
 
 このサーバーはHTTP経由でJSON-RPC 2.0メッセージを受け取り、
 安全にgh / git コマンドを実行して結果を返します。
@@ -47,10 +48,23 @@ JOB_LOG_DEFAULT_LIMIT_LINES = 500
 JOB_LOG_MAX_LIMIT_LINES = 2000
 # GitHub Actions のログ本文の先頭に付く BOM (UTF-8 としてデコードした後の文字)
 UTF8_BOM = "﻿"
+# gh project の一覧系ツールで limit 未指定時に取得する件数 (gh project の既定と同じ値を明示する) と上限
+PROJECT_DEFAULT_LIMIT = 30
+PROJECT_MAX_LIMIT = 100
+# gh_project_list で各プロジェクトから readme を除く jq 式
+PROJECT_LIST_JQ = "{totalCount, projects: [.projects[] | del(.readme)]}"
+# gh_project_item_list で各アイテムの content から body を除く jq 式
+# content は判別できない種類のアイテムで null になる
+PROJECT_ITEM_LIST_JQ = (
+    "{totalCount, items: [.items[] | "
+    "if .content == null then . else .content |= del(.body) end]}"
+)
+# gh project item-add / item-edit の出力から body を除く jq 式
+PROJECT_ITEM_JQ = "del(.body)"
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
 SERVER_NAME = "gh-proxy"
-SERVER_VERSION = "1.10.0"
+SERVER_VERSION = "1.11.0"
 
 # JSON-RPCエラーコード
 PARSE_ERROR = -32700
@@ -59,9 +73,20 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
+# パターンの末尾は $ ではなく \Z とする
+# Python の $ は文字列末尾の改行の直前にも一致し、末尾が改行の値を通してしまうため
+OWNER_PATTERN = "^[a-zA-Z0-9][a-zA-Z0-9-]*\\Z"
+REPOSITORY_NAME_PATTERN = "^[a-zA-Z0-9._-]+\\Z"
+
+# github.com の issue / Pull Request の URL の許可パターン
+# gh の API の送り先は URL のホストではなく gh に設定されたホストのため、対象を github.com に限る
+ISSUE_OR_PULL_REQUEST_URL_PATTERN = (
+    "^https://github\\.com/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+\\Z"
+)
+
 # ブランチ名の許可パターン
 # 先頭の - / : / + を拒否することで、オプション注入・削除refspec・force refspecを防ぐ
-BRANCH_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+BRANCH_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._/-]*\\Z"
 
 # 進行中の git 操作を示す gitdir 内のパス
 # これらが存在する状態でブランチを切り替えると、進行中の操作の状態が壊れる
@@ -85,12 +110,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 }
             },
             "required": ["owner", "repository_name"]
@@ -105,12 +130,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "state": {
                     "type": "string",
@@ -140,12 +165,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -165,12 +190,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "state": {
                     "type": "string",
@@ -200,12 +225,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "limit": {
                     "type": "integer",
@@ -230,12 +255,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -255,12 +280,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -280,12 +305,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -305,12 +330,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "branch": {
                     "type": "string",
@@ -410,12 +435,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "number": {
                     "type": "integer",
@@ -455,12 +480,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "run_id": {
                     "type": "integer",
@@ -493,12 +518,12 @@ TOOLS = [
                 "owner": {
                     "type": "string",
                     "description": "リポジトリのオーナー名",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*$"
+                    "pattern": OWNER_PATTERN
                 },
                 "repository_name": {
                     "type": "string",
                     "description": "リポジトリ名",
-                    "pattern": "^[a-zA-Z0-9._-]+$"
+                    "pattern": REPOSITORY_NAME_PATTERN
                 },
                 "job_id": {
                     "type": "integer",
@@ -529,6 +554,197 @@ TOOLS = [
                 }
             },
             "required": ["owner", "repository_name", "job_id"]
+        }
+    },
+    {
+        "name": "gh_project_list",
+        "description": (
+            "指定された owner (user または organization) の GitHub Projects の一覧を取得します。"
+            "totalCount と projects (number, title, url, shortDescription, public, closed, id, "
+            "items, fields, owner) を返します。number がプロジェクト番号です。"
+            "closed のプロジェクトは含みません。totalCount は closed を含む総数で、"
+            "limit 件を取得してから closed を除くため、projects の件数は limit より少なくなることがあります。"
+            "gh のトークンに project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得する最大件数（未指定時は30）",
+                    "minimum": 1,
+                    "maximum": PROJECT_MAX_LIMIT
+                }
+            },
+            "required": ["owner"]
+        }
+    },
+    {
+        "name": "gh_project_field_list",
+        "description": (
+            "指定された GitHub Projects のプロジェクトのフィールド一覧を取得します。"
+            "fields (id, name, type) と totalCount を返します。"
+            "single select のフィールド (Status など) は options (id, name) を含み、"
+            "name が設定できる選択肢名です。"
+            "プロジェクト番号は gh_project_list の projects の number から得られます。"
+            "gh のトークンに project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "project_number": {
+                    "type": "integer",
+                    "description": "プロジェクト番号",
+                    "minimum": 1
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得する最大件数（未指定時は30）",
+                    "minimum": 1,
+                    "maximum": PROJECT_MAX_LIMIT
+                }
+            },
+            "required": ["owner", "project_number"]
+        }
+    },
+    {
+        "name": "gh_project_item_list",
+        "description": (
+            "指定された GitHub Projects のプロジェクトのアイテム (issue / Pull Request / draft issue) と、"
+            "各アイテムのフィールド値の一覧を取得します。totalCount と items を返します。"
+            "各アイテムは id、content (type, title, number, repository, url。本文は含みません)、"
+            "およびフィールド値を含みます。フィールド値のキーはフィールド名の先頭1文字を小文字にしたもので "
+            "(例: Status は status)、single select の値は選択肢名の文字列です。"
+            "totalCount が items の件数より大きい場合は切り詰められています "
+            "(続きを取得する手段はないため、query で絞り込んでください)。"
+            "0件の場合は items が空配列になります。"
+            "gh のトークンに project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "project_number": {
+                    "type": "integer",
+                    "description": "プロジェクト番号",
+                    "minimum": 1
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得する最大件数（未指定時は30）",
+                    "minimum": 1,
+                    "maximum": PROJECT_MAX_LIMIT
+                },
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Projects のフィルタ構文による絞り込み"
+                        "（例: status:\"In Progress\", -status:Done, assignee:octocat is:issue）"
+                    ),
+                    "minLength": 1
+                }
+            },
+            "required": ["owner", "project_number"]
+        }
+    },
+    {
+        "name": "gh_project_item_add",
+        "description": (
+            "既存の issue または Pull Request を、指定された GitHub Projects のプロジェクトにアイテムとして追加します。"
+            "追加したアイテムの id, title, type, url を返します。"
+            "追加済みの issue / Pull Request を指定した場合は、重複して追加されず、既存のアイテムが返ります。"
+            "issue / Pull Request 自体は変更されませんが、そのタイムラインに追加の記録が残り、"
+            "プロジェクトの workflow の設定によっては Status の自動設定などが行われます。"
+            "追加したアイテムをプロジェクトから外すツールはありません。"
+            "gh のトークンに project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "project_number": {
+                    "type": "integer",
+                    "description": "プロジェクト番号",
+                    "minimum": 1
+                },
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "追加する issue または Pull Request の URL"
+                        "（例: https://github.com/octocat/hello-world/issues/23）。github.com のみ対応"
+                    ),
+                    "pattern": ISSUE_OR_PULL_REQUEST_URL_PATTERN
+                }
+            },
+            "required": ["owner", "project_number", "url"]
+        }
+    },
+    {
+        "name": "gh_project_item_edit",
+        "description": (
+            "GitHub Projects のプロジェクトに追加済みの issue または Pull Request の、フィールド値を1つ更新します "
+            "(Status の変更など)。更新したアイテムの id, title, type, url を返します。"
+            "field にフィールド名、value に設定する値を指定します。single select のフィールドでは "
+            "value は選択肢名で、存在しない選択肢名を指定するとエラーになります "
+            "(選択肢名は gh_project_field_list で得られます)。"
+            "更新できるのは single select / text / number / date のフィールドです。"
+            "プロジェクトに追加されていない issue / Pull Request を指定するとエラーになるため、"
+            "先に gh_project_item_add で追加してください。"
+            "プロジェクトの workflow (Auto-close issue など) が有効な場合、Status の変更をきっかけに "
+            "issue がクローズされることがあります。"
+            "gh 2.97.0 以上と、gh のトークンの project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "project_number": {
+                    "type": "integer",
+                    "description": "プロジェクト番号",
+                    "minimum": 1
+                },
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "フィールド値を更新する issue または Pull Request の URL"
+                        "（例: https://github.com/octocat/hello-world/issues/23）。github.com のみ対応"
+                    ),
+                    "pattern": ISSUE_OR_PULL_REQUEST_URL_PATTERN
+                },
+                "field": {
+                    "type": "string",
+                    "description": "更新するフィールドの名前（例: Status）",
+                    "minLength": 1
+                },
+                "value": {
+                    "type": "string",
+                    "description": "設定する値。single select のフィールドでは選択肢名（例: In Progress）",
+                    "minLength": 1
+                }
+            },
+            "required": ["owner", "project_number", "url", "field", "value"]
         }
     }
 ]
@@ -1707,6 +1923,91 @@ def execute_git_sync_default_branch(arguments: Dict[str, Any]) -> List[Dict[str,
     return [{"type": "text", "text": output}]
 
 
+def build_gh_project_list_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_list の gh コマンド引数を組み立てる"""
+    limit = arguments.get("limit", PROJECT_DEFAULT_LIMIT)
+    return ["project", "list", "--owner", arguments["owner"], "--limit", str(limit),
+            "--format", "json", "--jq", PROJECT_LIST_JQ]
+
+
+def execute_gh_project_list(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_list ツールの実行"""
+    return run_gh_tool(build_gh_project_list_args(arguments), "gh project list failed")
+
+
+def build_gh_project_field_list_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_field_list の gh コマンド引数を組み立てる"""
+    limit = arguments.get("limit", PROJECT_DEFAULT_LIMIT)
+    return ["project", "field-list", str(arguments["project_number"]), "--owner", arguments["owner"],
+            "--limit", str(limit), "--format", "json"]
+
+
+def execute_gh_project_field_list(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_field_list ツールの実行"""
+    return run_gh_tool(build_gh_project_field_list_args(arguments), "gh project field-list failed")
+
+
+def build_gh_project_item_list_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_item_list の gh コマンド引数を組み立てる
+
+    query は先頭がハイフンの値 (例: -status:Done) を取りうるため、
+    --query の値として独立した argv 要素で渡す。
+    """
+    limit = arguments.get("limit", PROJECT_DEFAULT_LIMIT)
+    args = ["project", "item-list", str(arguments["project_number"]), "--owner", arguments["owner"],
+            "--limit", str(limit), "--format", "json", "--jq", PROJECT_ITEM_LIST_JQ]
+
+    if "query" in arguments:
+        args.extend(["--query", arguments["query"]])
+
+    return args
+
+
+def execute_gh_project_item_list(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_item_list ツールの実行"""
+    return run_gh_tool(build_gh_project_item_list_args(arguments), "gh project item-list failed")
+
+
+def build_gh_project_item_add_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_item_add の gh コマンド引数を組み立てる"""
+    return ["project", "item-add", str(arguments["project_number"]), "--owner", arguments["owner"],
+            "--url", arguments["url"], "--format", "json", "--jq", PROJECT_ITEM_JQ]
+
+
+def execute_gh_project_item_add(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_item_add ツールの実行"""
+    return run_gh_tool(build_gh_project_item_add_args(arguments), "gh project item-add failed")
+
+
+def build_gh_project_item_edit_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_item_edit の gh コマンド引数を組み立てる
+
+    gh 2.97.0 で追加された名前指定の経路 (--url / --field / --value) を使う。
+    project ID・item ID・field ID・選択肢 ID は gh が解決する。
+    field と value は任意の文字を含みうるため、それぞれのオプションの値として
+    独立した argv 要素で渡す。
+    """
+    return ["project", "item-edit", str(arguments["project_number"]), "--owner", arguments["owner"],
+            "--url", arguments["url"], "--field", arguments["field"], "--value", arguments["value"],
+            "--format", "json", "--jq", PROJECT_ITEM_JQ]
+
+
+def execute_gh_project_item_edit(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_item_edit ツールの実行"""
+    return run_gh_tool(build_gh_project_item_edit_args(arguments), "gh project item-edit failed")
+
+
+# owner とプロジェクト番号で対象を指定するツールの実行関数
+# 実行関数は (arguments) を受け取る
+PROJECT_TOOL_EXECUTORS = {
+    "gh_project_list": execute_gh_project_list,
+    "gh_project_field_list": execute_gh_project_field_list,
+    "gh_project_item_list": execute_gh_project_item_list,
+    "gh_project_item_add": execute_gh_project_item_add,
+    "gh_project_item_edit": execute_gh_project_item_edit,
+}
+
+
 # owner/repository_name を引数に取るツールの実行関数
 # 実行関数は (repo, arguments) を受け取る
 REPO_TOOL_EXECUTORS = {
@@ -1744,6 +2045,10 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> List[Dict[str, An
 
     if tool_name == "git_sync_default_branch":
         return execute_git_sync_default_branch(arguments)
+
+    project_executor = PROJECT_TOOL_EXECUTORS.get(tool_name)
+    if project_executor is not None:
+        return project_executor(arguments)
 
     executor = REPO_TOOL_EXECUTORS.get(tool_name)
     if executor is None:

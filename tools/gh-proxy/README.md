@@ -5,7 +5,7 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 ## 概要
 
 このサーバーは、Claude CodeなどのMCPクライアントに対して、GitHubのreadonly操作と、
-一部の書き込み操作（git push、Pull Request作成、デフォルトブランチのマージ / 同期）を提供します。
+一部の書き込み操作（git push、Pull Request作成、デフォルトブランチのマージ / 同期、GitHub Projects へのアイテム追加とフィールド値の更新）を提供します。
 ホスト側でサーバーを起動し、Dockerコンテナで動作するClaude Codeから HTTP経由でアクセスすることで、
 認証情報を渡すことなくGitHubを操作できます。
 
@@ -15,6 +15,7 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 - GitHub CLI (gh) 2.97.0 以上
   - gh_run_job_log は `gh api` の `--allow-escape-sequences` を使います。このフラグは 2.97.0 で追加されました。
     2.97.0 未満では未知のフラグとして gh がエラー終了し、gh_run_job_log はログを取得できません（他のツールには影響しません）
+  - gh_project_item_edit は `gh project item-edit` の `--url` / `--field` / `--value` を使います。これらのフラグは 2.97.0 で追加されました
   - gh_issue_view の parent / subIssues / subIssuesSummary / blockedBy / blocking は 2.94.0 で追加されたフィールドです
   - gh_pr_view の closingIssuesReferences は 2.72.0、gh_issue_view の closedByPullRequestsReferences は 2.73.0 で追加されたフィールドです
   - 2.94.0 未満のバージョンでは未知の JSON フィールド指定として gh がエラー終了し、gh_issue_view / gh_pr_view は基本フィールドも含めて取得できません
@@ -49,6 +50,9 @@ gh auth login
 
 readonly ツールのみ利用する場合、認証トークンのスコープは `repo:read` または `public_repo` のみに制限することを推奨します。
 gh_pr_create を利用する場合は、対象リポジトリへの書き込みが可能なスコープ（`repo` 等）が必要です。
+gh_project_ で始まるツールを利用する場合は `project` スコープが必要です。`gh auth login` の既定のスコープには含まれないため、
+`gh auth refresh -s project` で追加してください。スコープがない場合、gh は
+`error: your authentication token is missing required scopes [read:project]` のエラーを返します。
 git_push は gh を利用せず、ホスト側の git の認証設定（credential helper 等）で push します。
 
 ### 3. サーバーの起動
@@ -640,6 +644,215 @@ REST API の出力を利用するため、フィールド名は snake_case で�
 }
 ```
 
+### 16. gh_project_list
+
+指定された owner の GitHub Projects の一覧を取得します。プロジェクト番号を調べるために使います。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）。`@me` は指定できません
+- `limit` (任意): 取得する最大件数（1-100）。未指定時は30
+
+`gh project list --owner <owner> --limit <n> --format json` の出力から、各プロジェクトの `readme` を除いて返します。
+
+**返却フィールド:**
+- `totalCount`: owner のプロジェクトの総数。closed のプロジェクトを含みます
+- `projects`: プロジェクトの配列。closed のプロジェクトは含みません
+  - `number`: プロジェクト番号。gh_project_ で始まる他のツールの `project_number` に指定します
+  - `title`, `url`, `shortDescription`, `public`, `closed`, `id`
+  - `items`, `fields`: それぞれ `{ "totalCount": N }` の形状
+  - `owner`: `{ "type", "login" }`。`type` は `User` または `Organization`
+
+**注意事項:**
+- gh は `limit` 件を取得してから closed のプロジェクトを除きます。このため `projects` の件数は `limit` より少なくなることがあります
+- closed のプロジェクトを取得する手段はありません
+
+**例:**
+```json
+{
+  "name": "gh_project_list",
+  "arguments": {
+    "owner": "octocat"
+  }
+}
+```
+
+### 17. gh_project_field_list
+
+指定されたプロジェクトのフィールド一覧を取得します。Status などに設定できる選択肢名を調べるために使います。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）
+- `project_number` (必須): プロジェクト番号。gh_project_list の `projects` の `number` から得られます
+- `limit` (任意): 取得する最大件数（1-100）。未指定時は30
+
+**返却フィールド:**
+`gh project field-list <project_number> --owner <owner> --format json` の出力をそのまま返します。
+
+- `fields`: フィールドの配列
+  - `id`, `name`
+  - `type`: `ProjectV2Field` / `ProjectV2SingleSelectField` / `ProjectV2IterationField` のいずれか
+  - `options`: single select のフィールド（`type` が `ProjectV2SingleSelectField`）のみ。`[{ "id", "name" }]` の配列で、
+    `name` が gh_project_item_edit の `value` に指定する選択肢名です
+- `totalCount`: フィールドの総数。`fields` の件数より大きい場合は切り詰められています
+
+Title、Assignees、Labels など、issue / Pull Request 側の属性を表すフィールドも含まれます（`type` は `ProjectV2Field`）。
+iteration のフィールドが持つ iteration の一覧は含まれません。
+
+**例:**
+```json
+{
+  "name": "gh_project_field_list",
+  "arguments": {
+    "owner": "octocat",
+    "project_number": 1
+  }
+}
+```
+
+### 18. gh_project_item_list
+
+指定されたプロジェクトのアイテム（issue / Pull Request / draft issue）と、各アイテムのフィールド値の一覧を取得します。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）
+- `project_number` (必須): プロジェクト番号
+- `limit` (任意): 取得する最大件数（1-100）。未指定時は30
+- `query` (任意): Projects のフィルタ構文による絞り込み（例: `status:"In Progress"`, `-status:Done`, `assignee:octocat is:issue`）
+
+`gh project item-list <project_number> --owner <owner> --limit <n> --format json` の出力から、
+各アイテムの `content.body`（issue / Pull Request の本文）を除いて返します。
+本文が必要な場合は gh_issue_view / gh_pr_view を利用してください。
+
+**返却フィールド:**
+- `totalCount`: 条件に一致するアイテムの総数
+- `items`: アイテムの配列。0件の場合は空配列
+  - `id`: アイテムの ID
+  - `content`: アイテムの内容
+    - issue / Pull Request: `type`（`Issue` / `PullRequest`）, `title`, `number`, `repository`（`owner/name` 形式）, `url`
+    - draft issue: `type`（`DraftIssue`）, `title`, `id`（draft issue の ID。値がある場合のみ）
+    - gh が種類を判別できないアイテムでは `null`
+  - フィールド値: フィールドごとに1つのキー
+
+**フィールド値のキー名と値:**
+- キー名は、フィールド名の先頭1文字のみを小文字にしたものです（gh の変換規則）。
+  `Status` は `status`、`Target Date` は `target Date` になります（スペースは残ります）
+- single select の値は選択肢名の文字列です（例: `"status": "In Progress"`）
+- text / date は文字列、number は数値、iteration は `{ "title", "startDate", "duration", "iterationId" }` です
+- labels / assignees などの複数値は文字列の配列です
+
+**注意事項:**
+- `totalCount` が `items` の件数より大きい場合は切り詰められています。続きを取得する手段はないため、`query` で絞り込んでください。
+  `limit` の上限が100のため、条件に一致するアイテムが101件以上ある場合は全件を取得できません
+- `query` は github.com と GitHub Enterprise Server 3.20 以上で利用できます。
+  対応していないホストでは `the --query flag is not supported on this GitHub host` のエラーになります
+- draft issue は `url` を持たないため、gh_project_item_edit の対象にできません
+
+**例:**
+```json
+{
+  "name": "gh_project_item_list",
+  "arguments": {
+    "owner": "octocat",
+    "project_number": 1,
+    "query": "-status:Done"
+  }
+}
+```
+
+### 19. gh_project_item_add
+
+既存の issue または Pull Request を、指定されたプロジェクトにアイテムとして追加します。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）
+- `project_number` (必須): プロジェクト番号
+- `url` (必須): 追加する issue または Pull Request の URL。
+  `https://github.com/<owner>/<repo>/issues/<番号>` または `https://github.com/<owner>/<repo>/pull/<番号>` の形式のみ受け付けます
+
+`gh project item-add <project_number> --owner <owner> --url <url> --format json` の出力から `body` を除いて返します。
+
+**返却フィールド:**
+- `id`: 追加したアイテムの ID
+- `title`: issue / Pull Request のタイトル
+- `type`: `Issue` または `PullRequest`
+- `url`: issue / Pull Request の URL
+
+**動作:**
+- 追加済みの issue / Pull Request を指定した場合は、重複して追加されず、既存のアイテムと同じ `id` が返ります（エラーになりません）
+- issue / Pull Request のタイトル・本文・状態は変更しません。
+  GitHub の GraphQL API には、プロジェクトへの追加を表す issue / Pull Request のタイムラインイベント（`AddedToProjectV2Event`）が定義されています
+- プロジェクトの組み込み workflow が有効な場合、追加をきっかけに workflow が動きます（例: 「Item added to project」による Status の自動設定）
+
+**注意事項:**
+- 対象ホストは github.com のみです。gh は URL のホストではなく gh に設定されたホストの API を呼び出すため、
+  GitHub Enterprise Server の URL は受け付けません
+- 追加したアイテムをプロジェクトから外すツールはありません。誤って追加した場合は、GitHub の Web UI またはホスト上の gh で外してください
+- draft issue の作成はできません
+
+**例:**
+```json
+{
+  "name": "gh_project_item_add",
+  "arguments": {
+    "owner": "octocat",
+    "project_number": 1,
+    "url": "https://github.com/octocat/hello-world/issues/23"
+  }
+}
+```
+
+### 20. gh_project_item_edit
+
+プロジェクトに追加済みの issue または Pull Request の、フィールド値を1つ更新します。Status の変更に使います。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）
+- `project_number` (必須): プロジェクト番号
+- `url` (必須): フィールド値を更新する issue または Pull Request の URL。gh_project_item_add の `url` と同じ形式のみ受け付けます
+- `field` (必須): 更新するフィールドの名前（例: `Status`）
+- `value` (必須): 設定する値。single select のフィールドでは選択肢名（例: `In Progress`）。
+  選択肢名は gh_project_field_list の `options` の `name` から得られます
+
+`gh project item-edit <project_number> --owner <owner> --url <url> --field <field> --value <value> --format json`
+の出力から `body` を除いて返します。project ID・アイテム ID・フィールド ID・選択肢 ID は gh が解決します。
+この名前指定の経路（`--url` / `--field` / `--value`）は gh 2.97.0 で追加されました。
+
+**返却フィールド:**
+- `id`, `title`, `type`, `url`: 更新したアイテム（gh_project_item_add と同じ形状）。更新後のフィールド値は含みません
+
+**更新できるフィールド:**
+- single select（`value` は選択肢名）、text、number、date（`value` は `YYYY-MM-DD`）
+- iteration のフィールドと、Assignees / Labels など issue / Pull Request 側の属性を表すフィールドは gh がエラーにします
+- 1回の呼び出しで更新できるフィールドは1つです。フィールド値のクリアはできません
+
+**エラーになる場合:**
+- 存在しない選択肢名を指定した場合。エラーに利用できる選択肢名の一覧が含まれます
+  （例: `option "no-such-option" not found on field "Status"; available options: Todo, In Progress, Done`）
+- プロジェクトに追加されていない issue / Pull Request を指定した場合
+  （例: `... is not an item in project 1; add it first with gh project item-add`）。先に gh_project_item_add で追加してください
+
+**注意事項:**
+- プロジェクトの組み込み workflow が有効な場合、フィールド値の変更をきっかけに workflow が動きます。
+  「Auto-close issue」が有効なプロジェクトでは、Status の変更をきっかけに issue がクローズされることがあります。
+  issue の状態を変えたくない場合は、プロジェクトの設定（Workflows）でこの workflow を無効にしてください。
+  このツールは workflow の有効 / 無効を確認しません
+- draft issue は `url` を持たないため、このツールでは更新できません
+- タイムアウトで中断した場合、更新が反映されたかどうかは応答から判別できません。gh_project_item_list で確認してください
+
+**例:**
+```json
+{
+  "name": "gh_project_item_edit",
+  "arguments": {
+    "owner": "octocat",
+    "project_number": 1,
+    "url": "https://github.com/octocat/hello-world/issues/23",
+    "field": "Status",
+    "value": "In Progress"
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -652,6 +865,9 @@ REST API の出力を利用するため、フィールド名は snake_case で�
 - GitHub Actions の workflow run 一覧の取得（Pull Request 単位）
 - GitHub Actions の job / step 一覧の取得（workflow run 単位）
 - GitHub Actions の job / step のログの取得
+- GitHub Projects のプロジェクト一覧の取得
+- GitHub Projects のフィールド一覧の取得
+- GitHub Projects のアイテムとフィールド値の一覧の取得
 
 gh_run_job_log が返すログ本文は、workflow の出力そのものです。以下の点を考慮してください。
 - ログには、GitHub がマスクしなかった機微な値（トークン、接続文字列、個人情報など）が含まれる可能性があり、
@@ -671,6 +887,12 @@ gh_run_job_log が返すログ本文は、workflow の出力そのものです�
   デフォルトブランチの保護はリポジトリ側の branch protection / ruleset で行ってください。
   gh を利用しないため、origin が GitHub 以外の remote であっても push を実行します
 - Pull Request作成（gh_pr_create）
+- GitHub Projects へのアイテム追加（gh_project_item_add）: 既存の issue / Pull Request をプロジェクトに追加します。
+  gh のトークンで書き込めるすべてのプロジェクトが対象になります。追加したアイテムを外すツールは提供しません
+- GitHub Projects のフィールド値の更新（gh_project_item_edit）: プロジェクトに追加済みのアイテムのフィールド値を1つ更新します。
+  更新できるのはプロジェクト側のフィールド（single select / text / number / date）のみで、
+  issue / Pull Request 側の属性は更新できません。ただし、プロジェクトの組み込み workflow（Auto-close issue など）が
+  有効な場合は、フィールド値の変更をきっかけに issue がクローズされることがあります
 - デフォルトブランチのマージ（git_merge_default_branch）: ローカルリポジトリの作業ツリー・
   インデックス・HEAD を書き換える操作です
 - デフォルトブランチへの同期（git_sync_default_branch）: ローカルリポジトリの作業ツリー・
@@ -692,8 +914,11 @@ git_sync_default_branch は、指定された `path` そのものではなく、
 - オーナー名・リポジトリ名: 正規表現パターンマッチング
 - ブランチ名: 正規表現パターンマッチング。先頭の `-` / `:` / `+` および `..` を拒否
   （オプション注入・削除refspec・force refspecの防止）
+- オーナー名・リポジトリ名・ブランチ名は、末尾に改行を含む値を拒否
+  （パターンの末尾を `$` ではなく `\Z` としています。Python の `$` は末尾の改行の直前にも一致するためです）
 - リポジトリパス: 絶対パス・ディレクトリ存在・.git 存在の確認
 - PRタイトル: 空文字の拒否
+- issue / Pull Request の URL: 正規表現パターンマッチング。github.com の issue / Pull Request の URL のみ受け付け
 - 数値: 範囲チェック
 - 状態: 列挙値チェック
 
@@ -708,6 +933,7 @@ git_sync_default_branch は、指定された `path` そのものではなく、
 GitHub認証トークンは利用するツールに応じて必要最小限のスコープに制限することを推奨します：
 - readonly ツールのみ利用する場合: `repo:read` または `public_repo`
 - gh_pr_create を利用する場合: 対象リポジトリへの書き込みが可能なスコープ（`repo` 等）
+- gh_project_ で始まるツールを利用する場合: `project`
 
 なお、git_push は gh を利用せず、ホスト側の git の認証設定（credential helper 等）を利用します。
 
