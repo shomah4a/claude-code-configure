@@ -5,7 +5,7 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 ## 概要
 
 このサーバーは、Claude CodeなどのMCPクライアントに対して、GitHubのreadonly操作と、
-一部の書き込み操作（git push、Pull Request作成、デフォルトブランチのマージ / 同期、GitHub Projects へのアイテム追加）を提供します。
+一部の書き込み操作（git push、Pull Request作成、デフォルトブランチのマージ / 同期、GitHub Projects へのアイテム追加とフィールド値の更新）を提供します。
 ホスト側でサーバーを起動し、Dockerコンテナで動作するClaude Codeから HTTP経由でアクセスすることで、
 認証情報を渡すことなくGitHubを操作できます。
 
@@ -800,6 +800,58 @@ iteration のフィールドが持つ iteration の一覧は含まれません�
 }
 ```
 
+### 20. gh_project_item_edit
+
+プロジェクトに追加済みの issue または Pull Request の、フィールド値を1つ更新します。Status の変更に使います。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）
+- `project_number` (必須): プロジェクト番号
+- `url` (必須): フィールド値を更新する issue または Pull Request の URL。gh_project_item_add の `url` と同じ形式のみ受け付けます
+- `field` (必須): 更新するフィールドの名前（例: `Status`）
+- `value` (必須): 設定する値。single select のフィールドでは選択肢名（例: `In Progress`）。
+  選択肢名は gh_project_field_list の `options` の `name` から得られます
+
+`gh project item-edit <project_number> --owner <owner> --url <url> --field <field> --value <value> --format json`
+の出力から `body` を除いて返します。project ID・アイテム ID・フィールド ID・選択肢 ID は gh が解決します。
+この名前指定の経路（`--url` / `--field` / `--value`）は gh 2.97.0 で追加されました。
+
+**返却フィールド:**
+- `id`, `title`, `type`, `url`: 更新したアイテム（gh_project_item_add と同じ形状）。更新後のフィールド値は含みません
+
+**更新できるフィールド:**
+- single select（`value` は選択肢名）、text、number、date（`value` は `YYYY-MM-DD`）
+- iteration のフィールドと、Assignees / Labels など issue / Pull Request 側の属性を表すフィールドは gh がエラーにします
+- 1回の呼び出しで更新できるフィールドは1つです。フィールド値のクリアはできません
+
+**エラーになる場合:**
+- 存在しない選択肢名を指定した場合。エラーに利用できる選択肢名の一覧が含まれます
+  （例: `option "no-such-option" not found on field "Status"; available options: Todo, In Progress, Done`）
+- プロジェクトに追加されていない issue / Pull Request を指定した場合
+  （例: `... is not an item in project 1; add it first with gh project item-add`）。先に gh_project_item_add で追加してください
+
+**注意事項:**
+- プロジェクトの組み込み workflow が有効な場合、フィールド値の変更をきっかけに workflow が動きます。
+  「Auto-close issue」が有効なプロジェクトでは、Status の変更をきっかけに issue がクローズされることがあります。
+  issue の状態を変えたくない場合は、プロジェクトの設定（Workflows）でこの workflow を無効にしてください。
+  このツールは workflow の有効 / 無効を確認しません
+- draft issue は `url` を持たないため、このツールでは更新できません
+- タイムアウトで中断した場合、更新が反映されたかどうかは応答から判別できません。gh_project_item_list で確認してください
+
+**例:**
+```json
+{
+  "name": "gh_project_item_edit",
+  "arguments": {
+    "owner": "octocat",
+    "project_number": 1,
+    "url": "https://github.com/octocat/hello-world/issues/23",
+    "field": "Status",
+    "value": "In Progress"
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -836,6 +888,10 @@ gh_run_job_log が返すログ本文は、workflow の出力そのものです�
 - Pull Request作成（gh_pr_create）
 - GitHub Projects へのアイテム追加（gh_project_item_add）: 既存の issue / Pull Request をプロジェクトに追加します。
   gh のトークンで書き込めるすべてのプロジェクトが対象になります。追加したアイテムを外すツールは提供しません
+- GitHub Projects のフィールド値の更新（gh_project_item_edit）: プロジェクトに追加済みのアイテムのフィールド値を1つ更新します。
+  更新できるのはプロジェクト側のフィールド（single select / text / number / date）のみで、
+  issue / Pull Request 側の属性は更新できません。ただし、プロジェクトの組み込み workflow（Auto-close issue など）が
+  有効な場合は、フィールド値の変更をきっかけに issue がクローズされることがあります
 - デフォルトブランチのマージ（git_merge_default_branch）: ローカルリポジトリの作業ツリー・
   インデックス・HEAD を書き換える操作です
 - デフォルトブランチへの同期（git_sync_default_branch）: ローカルリポジトリの作業ツリー・

@@ -58,7 +58,7 @@ PROJECT_ITEM_LIST_JQ = (
     "{totalCount, items: [.items[] | "
     "if .content == null then . else .content |= del(.body) end]}"
 )
-# gh project item-add の出力から body を除く jq 式
+# gh project item-add / item-edit の出力から body を除く jq 式
 PROJECT_ITEM_JQ = "del(.body)"
 # gh の --json 出力 (非 TTY 時) と同じ空白なしの区切り
 JSON_COMPACT_SEPARATORS = (",", ":")
@@ -694,6 +694,56 @@ TOOLS = [
                 }
             },
             "required": ["owner", "project_number", "url"]
+        }
+    },
+    {
+        "name": "gh_project_item_edit",
+        "description": (
+            "GitHub Projects のプロジェクトに追加済みの issue または Pull Request の、フィールド値を1つ更新します "
+            "(Status の変更など)。更新したアイテムの id, title, type, url を返します。"
+            "field にフィールド名、value に設定する値を指定します。single select のフィールドでは "
+            "value は選択肢名で、存在しない選択肢名を指定するとエラーになります "
+            "(選択肢名は gh_project_field_list で得られます)。"
+            "更新できるのは single select / text / number / date のフィールドです。"
+            "プロジェクトに追加されていない issue / Pull Request を指定するとエラーになるため、"
+            "先に gh_project_item_add で追加してください。"
+            "プロジェクトの workflow (Auto-close issue など) が有効な場合、Status の変更をきっかけに "
+            "issue がクローズされることがあります。"
+            "gh 2.97.0 以上と、gh のトークンの project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "project_number": {
+                    "type": "integer",
+                    "description": "プロジェクト番号",
+                    "minimum": 1
+                },
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "フィールド値を更新する issue または Pull Request の URL"
+                        "（例: https://github.com/octocat/hello-world/issues/23）。github.com のみ対応"
+                    ),
+                    "pattern": ISSUE_OR_PULL_REQUEST_URL_PATTERN
+                },
+                "field": {
+                    "type": "string",
+                    "description": "更新するフィールドの名前（例: Status）",
+                    "minLength": 1
+                },
+                "value": {
+                    "type": "string",
+                    "description": "設定する値。single select のフィールドでは選択肢名（例: In Progress）",
+                    "minLength": 1
+                }
+            },
+            "required": ["owner", "project_number", "url", "field", "value"]
         }
     }
 ]
@@ -1928,6 +1978,24 @@ def execute_gh_project_item_add(arguments: Dict[str, Any]) -> List[Dict[str, Any
     return run_gh_tool(build_gh_project_item_add_args(arguments), "gh project item-add failed")
 
 
+def build_gh_project_item_edit_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_item_edit の gh コマンド引数を組み立てる
+
+    gh 2.97.0 で追加された名前指定の経路 (--url / --field / --value) を使う。
+    project ID・item ID・field ID・選択肢 ID は gh が解決する。
+    field と value は任意の文字を含みうるため、それぞれのオプションの値として
+    独立した argv 要素で渡す。
+    """
+    return ["project", "item-edit", str(arguments["project_number"]), "--owner", arguments["owner"],
+            "--url", arguments["url"], "--field", arguments["field"], "--value", arguments["value"],
+            "--format", "json", "--jq", PROJECT_ITEM_JQ]
+
+
+def execute_gh_project_item_edit(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_item_edit ツールの実行"""
+    return run_gh_tool(build_gh_project_item_edit_args(arguments), "gh project item-edit failed")
+
+
 # owner とプロジェクト番号で対象を指定するツールの実行関数
 # 実行関数は (arguments) を受け取る
 PROJECT_TOOL_EXECUTORS = {
@@ -1935,6 +2003,7 @@ PROJECT_TOOL_EXECUTORS = {
     "gh_project_field_list": execute_gh_project_field_list,
     "gh_project_item_list": execute_gh_project_item_list,
     "gh_project_item_add": execute_gh_project_item_add,
+    "gh_project_item_edit": execute_gh_project_item_edit,
 }
 
 

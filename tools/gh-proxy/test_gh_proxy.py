@@ -259,7 +259,7 @@ class ExecuteToolDispatchTest(unittest.TestCase):
         self.assertEqual(
             set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys()),
             {"gh_project_list", "gh_project_field_list", "gh_project_item_list",
-             "gh_project_item_add"},
+             "gh_project_item_add", "gh_project_item_edit"},
         )
 
     def test_TOOLSの全ツールがgit系ツールかいずれかのディスパッチ表に登録されている(self):
@@ -1746,6 +1746,90 @@ class GhProjectItemAddSchemaValidationTest(unittest.TestCase):
     def test_先頭がハイフンの値はValidationErrorになる(self):
         with self.assertRaises(gh_proxy.ValidationError):
             self._validate_with_url("--owner")
+
+
+class BuildGhProjectItemEditArgsTest(unittest.TestCase):
+    """gh_project_item_edit の gh コマンド引数組み立てのテスト"""
+
+    BASE_ARGUMENTS = {
+        "owner": "octocat",
+        "project_number": 1,
+        "url": "https://github.com/octocat/hello-world/issues/23",
+    }
+
+    def test_urlとフィールド名と値を名前指定のオプションとして含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_item_edit_args(
+                {**self.BASE_ARGUMENTS, "field": "Status", "value": "In Progress"}),
+            ["project", "item-edit", "1", "--owner", "octocat",
+             "--url", "https://github.com/octocat/hello-world/issues/23",
+             "--field", "Status", "--value", "In Progress",
+             "--format", "json", "--jq", "del(.body)"],
+        )
+
+    def test_fieldとvalueが先頭ハイフンでもそれぞれのオプションの値のargv要素として組み立てる(self):
+        args = gh_proxy.build_gh_project_item_edit_args(
+            {**self.BASE_ARGUMENTS, "field": "--clear", "value": "--clear"})
+
+        self.assertEqual(args[args.index("--field") + 1], "--clear")
+        self.assertEqual(args[args.index("--value") + 1], "--clear")
+        self.assertEqual(args.count("--clear"), 2)
+
+
+class GhProjectItemEditSchemaValidationTest(unittest.TestCase):
+    """gh_project_item_edit の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {
+        "owner": "octocat",
+        "project_number": 1,
+        "url": "https://github.com/octocat/hello-world/issues/23",
+        "field": "Status",
+        "value": "In Progress",
+    }
+
+    def _arguments_without(self, field_name):
+        return {key: value for key, value in self.BASE_ARGUMENTS.items() if key != field_name}
+
+    def test_全引数が揃っていれば例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_item_edit", dict(self.BASE_ARGUMENTS))
+
+    def test_valueが先頭ハイフンでも例外にならない(self):
+        gh_proxy.validate_arguments(
+            "gh_project_item_edit", {**self.BASE_ARGUMENTS, "value": "--clear"})
+
+    def test_urlが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_edit", self._arguments_without("url"))
+
+    def test_fieldが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_edit", self._arguments_without("field"))
+
+    def test_valueが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_item_edit", self._arguments_without("value"))
+
+    def test_fieldが空文字だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_edit", {**self.BASE_ARGUMENTS, "field": ""})
+
+    def test_valueが空文字だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_edit", {**self.BASE_ARGUMENTS, "value": ""})
+
+    def test_github_com以外のホストのURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_edit",
+                {**self.BASE_ARGUMENTS, "url": "https://ghe.example.com/octocat/hello-world/issues/23"})
+
+    def test_末尾に改行があるURLはValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_item_edit",
+                {**self.BASE_ARGUMENTS, "url": "https://github.com/octocat/hello-world/issues/23\n"})
 
 
 if __name__ == "__main__":
