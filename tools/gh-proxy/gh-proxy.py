@@ -568,6 +568,39 @@ TOOLS = [
             },
             "required": ["owner"]
         }
+    },
+    {
+        "name": "gh_project_field_list",
+        "description": (
+            "指定された GitHub Projects のプロジェクトのフィールド一覧を取得します。"
+            "fields (id, name, type) と totalCount を返します。"
+            "single select のフィールド (Status など) は options (id, name) を含み、"
+            "name が設定できる選択肢名です。"
+            "プロジェクト番号は gh_project_list の projects の number から得られます。"
+            "gh のトークンに project スコープが必要です"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "description": "プロジェクトのオーナー名 (user または organization の login)",
+                    "pattern": OWNER_PATTERN
+                },
+                "project_number": {
+                    "type": "integer",
+                    "description": "プロジェクト番号",
+                    "minimum": 1
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得する最大件数（未指定時は30）",
+                    "minimum": 1,
+                    "maximum": PROJECT_MAX_LIMIT
+                }
+            },
+            "required": ["owner", "project_number"]
+        }
     }
 ]
 
@@ -1757,10 +1790,23 @@ def execute_gh_project_list(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
     return run_gh_tool(build_gh_project_list_args(arguments), "gh project list failed")
 
 
+def build_gh_project_field_list_args(arguments: Dict[str, Any]) -> List[str]:
+    """gh_project_field_list の gh コマンド引数を組み立てる"""
+    limit = arguments.get("limit", PROJECT_DEFAULT_LIMIT)
+    return ["project", "field-list", str(arguments["project_number"]), "--owner", arguments["owner"],
+            "--limit", str(limit), "--format", "json"]
+
+
+def execute_gh_project_field_list(arguments: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """gh_project_field_list ツールの実行"""
+    return run_gh_tool(build_gh_project_field_list_args(arguments), "gh project field-list failed")
+
+
 # owner とプロジェクト番号で対象を指定するツールの実行関数
 # 実行関数は (arguments) を受け取る
 PROJECT_TOOL_EXECUTORS = {
     "gh_project_list": execute_gh_project_list,
+    "gh_project_field_list": execute_gh_project_field_list,
 }
 
 

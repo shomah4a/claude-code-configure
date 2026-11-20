@@ -258,7 +258,7 @@ class ExecuteToolDispatchTest(unittest.TestCase):
     def test_プロジェクト指定ツールがディスパッチ表に登録されている(self):
         self.assertEqual(
             set(gh_proxy.PROJECT_TOOL_EXECUTORS.keys()),
-            {"gh_project_list"},
+            {"gh_project_list", "gh_project_field_list"},
         )
 
     def test_TOOLSの全ツールがgit系ツールかいずれかのディスパッチ表に登録されている(self):
@@ -1575,6 +1575,51 @@ class GhProjectListSchemaValidationTest(unittest.TestCase):
         with self.assertRaises(gh_proxy.ValidationError):
             gh_proxy.validate_arguments(
                 "gh_project_list", {"owner": "octocat", "repository_name": "hello-world"})
+
+
+class BuildGhProjectFieldListArgsTest(unittest.TestCase):
+    """gh_project_field_list の gh コマンド引数組み立てのテスト"""
+
+    def test_limit未指定の場合は文字列化したプロジェクト番号と30件指定とJSON形式を含む引数リストを組み立てる(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_field_list_args({"owner": "octocat", "project_number": 1}),
+            ["project", "field-list", "1", "--owner", "octocat", "--limit", "30", "--format", "json"],
+        )
+
+    def test_limitを指定するとその件数を文字列化して渡す(self):
+        self.assertEqual(
+            gh_proxy.build_gh_project_field_list_args(
+                {"owner": "octocat", "project_number": 12, "limit": 100}),
+            ["project", "field-list", "12", "--owner", "octocat", "--limit", "100", "--format", "json"],
+        )
+
+
+class GhProjectFieldListSchemaValidationTest(unittest.TestCase):
+    """gh_project_field_list の引数バリデーションのテスト"""
+
+    BASE_ARGUMENTS = {"owner": "octocat", "project_number": 1}
+
+    def test_ownerとproject_numberが揃っていれば例外にならない(self):
+        gh_proxy.validate_arguments("gh_project_field_list", dict(self.BASE_ARGUMENTS))
+
+    def test_project_numberが欠けているとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments("gh_project_field_list", {"owner": "octocat"})
+
+    def test_project_numberが0だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_field_list", {"owner": "octocat", "project_number": 0})
+
+    def test_project_numberが文字列だとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_field_list", {"owner": "octocat", "project_number": "1"})
+
+    def test_limitが上限100を超えるとValidationErrorになる(self):
+        with self.assertRaises(gh_proxy.ValidationError):
+            gh_proxy.validate_arguments(
+                "gh_project_field_list", {**self.BASE_ARGUMENTS, "limit": 101})
 
 
 if __name__ == "__main__":

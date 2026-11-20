@@ -675,6 +675,39 @@ REST API の出力を利用するため、フィールド名は snake_case で�
 }
 ```
 
+### 17. gh_project_field_list
+
+指定されたプロジェクトのフィールド一覧を取得します。Status などに設定できる選択肢名を調べるために使います。
+
+**引数:**
+- `owner` (必須): プロジェクトのオーナー名（user または organization の login）
+- `project_number` (必須): プロジェクト番号。gh_project_list の `projects` の `number` から得られます
+- `limit` (任意): 取得する最大件数（1-100）。未指定時は30
+
+**返却フィールド:**
+`gh project field-list <project_number> --owner <owner> --format json` の出力をそのまま返します。
+
+- `fields`: フィールドの配列
+  - `id`, `name`
+  - `type`: `ProjectV2Field` / `ProjectV2SingleSelectField` / `ProjectV2IterationField` のいずれか
+  - `options`: single select のフィールド（`type` が `ProjectV2SingleSelectField`）のみ。`[{ "id", "name" }]` の配列で、
+    `name` が gh_project_item_edit の `value` に指定する選択肢名です
+- `totalCount`: フィールドの総数。`fields` の件数より大きい場合は切り詰められています
+
+Title、Assignees、Labels など、issue / Pull Request 側の属性を表すフィールドも含まれます（`type` は `ProjectV2Field`）。
+iteration のフィールドが持つ iteration の一覧は含まれません。
+
+**例:**
+```json
+{
+  "name": "gh_project_field_list",
+  "arguments": {
+    "owner": "octocat",
+    "project_number": 1
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -688,6 +721,7 @@ REST API の出力を利用するため、フィールド名は snake_case で�
 - GitHub Actions の job / step 一覧の取得（workflow run 単位）
 - GitHub Actions の job / step のログの取得
 - GitHub Projects のプロジェクト一覧の取得
+- GitHub Projects のフィールド一覧の取得
 
 gh_run_job_log が返すログ本文は、workflow の出力そのものです。以下の点を考慮してください。
 - ログには、GitHub がマスクしなかった機微な値（トークン、接続文字列、個人情報など）が含まれる可能性があり、
