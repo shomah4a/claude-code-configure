@@ -15,6 +15,7 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 - GitHub CLI (gh) 2.97.0 以上
   - gh_run_job_log は `gh api` の `--allow-escape-sequences` を使います。このフラグは 2.97.0 で追加されました。
     2.97.0 未満では未知のフラグとして gh がエラー終了し、gh_run_job_log はログを取得できません（他のツールには影響しません）
+  - gh_project_item_edit は `gh project item-edit` の `--url` / `--field` / `--value` を使います。これらのフラグは 2.97.0 で追加されました
   - gh_issue_view の parent / subIssues / subIssuesSummary / blockedBy / blocking は 2.94.0 で追加されたフィールドです
   - gh_pr_view の closingIssuesReferences は 2.72.0、gh_issue_view の closedByPullRequestsReferences は 2.73.0 で追加されたフィールドです
   - 2.94.0 未満のバージョンでは未知の JSON フィールド指定として gh がエラー終了し、gh_issue_view / gh_pr_view は基本フィールドも含めて取得できません
