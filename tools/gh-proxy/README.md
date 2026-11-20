@@ -12,10 +12,12 @@ Model Context Protocol (MCP) サーバーとして動作し、GitHub CLI (gh) / 
 ## 必要要件
 
 - Python 3.8 以上（標準ライブラリのみ使用）
-- GitHub CLI (gh) 2.94.0 以上
+- GitHub CLI (gh) 2.97.0 以上
+  - gh_run_job_log は `gh api` の `--allow-escape-sequences` を使います。このフラグは 2.97.0 で追加されました。
+    2.97.0 未満では未知のフラグとして gh がエラー終了し、gh_run_job_log はログを取得できません（他のツールには影響しません）
   - gh_issue_view の parent / subIssues / subIssuesSummary / blockedBy / blocking は 2.94.0 で追加されたフィールドです
   - gh_pr_view の closingIssuesReferences は 2.72.0、gh_issue_view の closedByPullRequestsReferences は 2.73.0 で追加されたフィールドです
-  - 要件未満のバージョンでは未知の JSON フィールド指定として gh がエラー終了し、gh_issue_view / gh_pr_view は基本フィールドも含めて取得できません
+  - 2.94.0 未満のバージョンでは未知の JSON フィールド指定として gh がエラー終了し、gh_issue_view / gh_pr_view は基本フィールドも含めて取得できません
 - GitHub Enterprise Server を利用する場合は 3.19 以上（sub-issue は 3.17 以上、blockedBy / blocking は 3.19 以上が必要）
 - git（git_push / git_merge_default_branch を利用する場合）
   - git_sync_default_branch を利用する場合は git 2.23 以上（`git switch` を使用します）
@@ -37,7 +39,7 @@ brew install gh
 # その他のOSについては https://cli.github.com/ を参照
 ```
 
-インストール後、`gh --version` で 2.94.0 以上であることを確認してください。
+インストール後、`gh --version` で 2.97.0 以上であることを確認してください。
 
 ### 2. GitHub認証
 
@@ -582,6 +584,62 @@ REST API の出力を利用するため、フィールド名は snake_case で�
 }
 ```
 
+### 15. gh_run_job_log
+
+指定された GitHub Actions の job のログを、行単位で取得します。
+
+**引数:**
+- `owner` (必須): リポジトリのオーナー名
+- `repository_name` (必須): リポジトリ名
+- `job_id` (必須): job の ID。gh_run_job_list の `jobs` の `id` から得られます
+- `step_number` (任意): step 番号。gh_run_job_list の `steps` の `number` を指定します。指定時はその step のログのみを取得します
+- `offset` (任意): 先頭からの行オフセット（0以上）。未指定時は0
+- `limit` (任意): 返す最大行数（1-2000）。未指定時は500
+- `tail` (任意): 末尾から返す行数（1-2000）。`offset` / `limit` と同時に指定するとエラーになります
+
+`gh api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/{job_id}/logs`
+（`step_number` 指定時は `.../jobs/{job_id}/steps/{step_number}/logs`）でログ全文を取得し、指定された範囲の行を返します。
+
+**返却フィールド:**
+- `totalLines`: ログの総行数
+- `offset`: 返した範囲の開始行（0始まり）。`tail` 指定時も実際の開始行が入るため、それより前の行は `offset` 指定で取得できます
+- `returnedLines`: 返した行数
+- `nextOffset`: 続きがある場合は次に指定する `offset`、最終行まで返した場合は `null`
+- `log`: ログ本文。行を `\n` で連結した文字列
+
+`offset` が `totalLines` 以上の場合は、エラーにせず0行（`log` は空文字）を返します。
+
+**行の数え方:**
+- 先頭の BOM は除去します（GitHub Actions のログは先頭に UTF-8 の BOM が付きます）
+- 末尾の改行は1つだけ除き、`\n` で分割します
+- `\r\n` と単独の `\r` は `\n` として扱います。進捗表示などで `\r` を出力するログでは、その位置でも行が分かれます
+- 各行の先頭には、GitHub が付与したタイムスタンプが付きます
+
+**注意事項:**
+- skipped の job や、完了していない job にはログがなく、`gh: HTTP 404` のエラーになります
+- 呼び出しのたびにログ全文を取得し直します。ページ数に比例して取得時間がかかるため、
+  `step_number` で対象を絞るか、`tail` で末尾のみを取得すると呼び出し回数を減らせます
+- 応答の上限は行数のみで、文字数やバイト数の上限はありません。1行が長いログでは応答が大きくなり、
+  クライアント側の出力上限を超える可能性があります。その場合は `limit` を小さくしてください
+  （実測例: 5750行で約714KB、平均124バイト/行、最長行3452バイト。この場合500行で約62KBになります）
+- エスケープシーケンス（ANSI カラーなど）は除去せず、そのまま `log` に含めます
+- UTF-8 として解釈できないバイト列を含むログは、全体が取得できずエラーになります
+- job の実行中に内容が変わるログでは、ページ間で `totalLines` や行の位置が変わる可能性があります
+
+**例:**
+```json
+{
+  "name": "gh_run_job_log",
+  "arguments": {
+    "owner": "anthropics",
+    "repository_name": "anthropic-sdk-python",
+    "job_id": 136055310860,
+    "step_number": 7,
+    "tail": 200
+  }
+}
+```
+
 ## セキュリティ考慮事項
 
 ### 1. 提供する操作の範囲
@@ -593,6 +651,19 @@ REST API の出力を利用するため、フィールド名は snake_case で�
 - ラベル一覧の取得
 - GitHub Actions の workflow run 一覧の取得（Pull Request 単位）
 - GitHub Actions の job / step 一覧の取得（workflow run 単位）
+- GitHub Actions の job / step のログの取得
+
+gh_run_job_log が返すログ本文は、workflow の出力そのものです。以下の点を考慮してください。
+- ログには、GitHub がマスクしなかった機微な値（トークン、接続文字列、個人情報など）が含まれる可能性があり、
+  それらがクライアント（Claude）のコンテキストに入ります
+- ログは信頼できない入力です。fork 由来の PR の workflow のログなど、第三者が内容を制御できるログには、
+  クライアントへの指示を装った文字列（プロンプトインジェクション）が含まれる可能性があります。
+  このサーバーは同じ接続で書き込み操作（git_push、gh_pr_create 等）も提供しているため、
+  ログの内容に基づいて書き込み操作を承認する際は注意してください
+- このサーバーはすべてのネットワークインターフェースで待ち受け、認証を行いません。
+  ポートに到達できるクライアントは、gh の認証情報で読み取れるリポジトリのログを取得できます
+- エスケープシーケンスは除去しません。JSON-RPC の応答では `\u001b` としてエスケープされますが、
+  クライアントが `log` をそのまま端末に出力すると解釈されます
 
 加えて、以下の書き込み操作を提供します：
 - ブランチのpush（git_push）: remote は origin 固定。force push・ブランチ削除・オプション指定は不可。
@@ -670,6 +741,23 @@ GitHub CLIをインストールし、PATHが通っていることを確認して
 ```bash
 GH_PROXY_TIMEOUT=60 python3 tools/gh-proxy/gh-proxy.py
 ```
+
+gh_run_job_log は呼び出しのたびに job のログ全文を取得するため、大きいログではタイムアウトしやすくなります。
+gh_pr_run_list は gh を2回実行するため、最大でタイムアウトの2倍の時間がかかります。
+サーバーは1リクエストずつ処理するため、時間のかかる呼び出しの間は他のツール呼び出しが待たされます。
+
+### gh_run_job_log で --allow-escape-sequences が未知のフラグとしてエラーになる
+
+gh のバージョンが 2.97.0 未満です。gh を 2.97.0 以上に更新してください。
+
+### gh_run_job_log で HTTP 404 になる
+
+```
+エラー: gh job log failed: gh: HTTP 404
+```
+
+skipped の job や完了していない job にはログがありません。gh_run_job_list で job の `status` と `conclusion` を確認してください。
+job ID や step 番号が誤っている場合も同じエラーになります。
 
 ### ポート既に使用中
 
